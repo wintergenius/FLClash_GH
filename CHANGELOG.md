@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0 (2026-09-14)
+
+**Features**
+
+- **desktop** Save button applies per-app lists without restarting the tunnel (10660f6)
+- **desktop** Per-app tunneling on Windows, WireSock-style lists rendered as process rules (9501609)
+
+**Bug Fixes**
+
+- **desktop** Reset open connections after applying per-app lists (ab2d6b4)
+
 ## v0.8.97 (2026-09-10)
 
 **Features**

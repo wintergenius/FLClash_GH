@@ -2,6 +2,39 @@
   "schemaVersion": 2,
   "versions": [
     {
+      "version": "1.0.0",
+      "tag": "v1.0.0",
+      "date": "2026-09-14",
+      "prerelease": false,
+      "groups": [
+        {
+          "type": "feat",
+          "entries": [
+            {
+              "id": "10660f6",
+              "scope": "desktop",
+              "text": "Save button applies per-app lists without restarting the tunnel"
+            },
+            {
+              "id": "9501609",
+              "scope": "desktop",
+              "text": "Per-app tunneling on Windows, WireSock-style lists rendered as process rules"
+            }
+          ]
+        },
+        {
+          "type": "fix",
+          "entries": [
+            {
+              "id": "ab2d6b4",
+              "scope": "desktop",
+              "text": "Reset open connections after applying per-app lists"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.8.97",
       "tag": "v0.8.97",
       "date": "2026-09-10",
