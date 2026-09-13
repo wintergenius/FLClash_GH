@@ -91,6 +91,11 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
   /// Re-applies the profile with the current lists. The Core hot-reloads the
   /// rules between OnSuspend/OnRunning; the TUN adapter and the listeners stay
   /// up, so nothing leaks past the tunnel while the rules are swapped.
+  ///
+  /// Rules are evaluated when a connection opens, so connections that already
+  /// exist (a browser's HTTP/2 pool, QUIC sessions, a game's sockets) would
+  /// keep their old verdict indefinitely. They are closed after the apply;
+  /// applications reconnect and land under the new rules.
   Future<void> _save() async {
     if (_saving) {
       return;
@@ -106,6 +111,10 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
         return;
       }
       if (applied) {
+        await ref.read(coreActionProvider.notifier).closeConnections();
+        if (!mounted) {
+          return;
+        }
         setState(() {
           _dirty = false;
         });
@@ -619,13 +628,15 @@ class AccessDesktopStrings {
   String get save => _t('Save', 'Сохранить');
   String get unsaved => _t(
     'Changes are not applied yet: press Save. The rules are reloaded with '
-    'the tunnel up, nothing leaks.',
+    'the tunnel up (nothing leaks) and open connections are reset so that '
+    'applications reconnect under the new rules.',
     'Изменения ещё не применены: нажми «Сохранить». Правила перезагрузятся '
-    'при поднятом туннеле, утечки нет.',
+    'при поднятом туннеле (утечки нет), открытые соединения сбросятся, '
+    'чтобы приложения переподключились уже по новым правилам.',
   );
   String get applied => _t(
-    'Per-app rules applied',
-    'Правила по приложениям применены',
+    'Per-app rules applied, open connections reset',
+    'Правила применены, открытые соединения сброшены',
   );
   String get applyFailed => _t(
     'Could not apply the profile, see the logs',
