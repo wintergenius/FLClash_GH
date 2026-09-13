@@ -11,7 +11,7 @@ class AutoLaunch {
   static AutoLaunch? _instance;
 
   AutoLaunch._internal() {
-    launcher.setup(appName: appName, appPath: Platform.resolvedExecutable);
+    launcher.setup(appName: displayName, appPath: Platform.resolvedExecutable);
   }
 
   factory AutoLaunch() {

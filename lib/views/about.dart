@@ -134,7 +134,7 @@ class AboutView extends ConsumerWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            appName,
+                            displayName,
                             style: Theme.of(context).textTheme.headlineSmall,
                           ),
                           Text(

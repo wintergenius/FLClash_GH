@@ -80,7 +80,7 @@ class AppTray implements TrayPort {
           ),
           isTemplate: isMacOS,
         ),
-        toolTip: appName,
+        toolTip: displayName,
         menu: _buildMenu(trayState: trayState, read: read),
       ),
     );

@@ -10,6 +10,11 @@ import 'package:fl_clash/models/models.dart';
 import 'package:material_ui/material_ui.dart';
 
 const appName = 'FlClash';
+/// Name shown to people: window title, tray, autostart entry, About.
+/// [appName] stays the internal identity (TUN device, WebDAV root, backups).
+const displayName = 'FlClash GH';
+/// Product token of the subscription User-Agent; no spaces by design.
+const uaName = 'FlClashGH';
 const appHelperService = 'FlClashHelperService';
 const coreManifestName = 'manifest.json';
 const coreName = 'clash.meta';
@@ -84,7 +89,7 @@ const systemDnsRecordKey = 'system_dns_record';
 const bootRecordKey = 'boot_record';
 const defaultSystemDnsFallback = '223.5.5.5';
 const double dialogCommonWidth = 300;
-const repository = 'chen08209/FlClash';
+const repository = 'wintergenius/FLClash_GH';
 const maxMobileWidth = 600;
 const maxLaptopWidth = 840;
 const defaultTestUrl = 'https://www.gstatic.com/generate_204';

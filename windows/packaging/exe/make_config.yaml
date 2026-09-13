@@ -1,9 +1,9 @@
 script_template: inno_setup.iss
-app_id: 728B3532-C74B-4870-9068-BE70FE12A3E6
-app_name: FlClash
-publisher: chen08209
-publisher_url: https://github.com/chen08209/FlClash
-display_name: FlClash
+app_id: 92D3DFFA-E948-4EF0-B1F3-5548359E085C
+app_name: FlClash GH
+publisher: wintergenius
+publisher_url: https://github.com/wintergenius/FLClash_GH
+display_name: FlClash GH
 executable_name: FlClash.exe
 output_base_file_name: FlClash.exe
 # Resolved against the project root: flutter_distributor turns this into an

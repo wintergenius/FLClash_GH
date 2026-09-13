@@ -390,7 +390,7 @@ class _WindowHeaderState extends ConsumerState<WindowHeader> {
       height: kHeaderHeight,
       onDragStart: windowManager.startDragging,
       onDoubleTap: caption.toggleMaximized,
-      title: system.isMacOS ? const Text(appName) : null,
+      title: system.isMacOS ? const Text(displayName) : null,
       actions: system.isMacOS
           ? null
           : WindowHeaderActions(

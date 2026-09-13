@@ -1,5 +1,7 @@
 <div>
 
+> **FlClash GH** — форк с per-app сплитом на Windows. Что изменено, как собирать и релизить: [GHOSTHOP.md](GHOSTHOP.md). Апстрим: [chen08209/FlClash](https://github.com/chen08209/FlClash).
+
 [**简体中文**](README_zh_CN.md)
 
 </div>
