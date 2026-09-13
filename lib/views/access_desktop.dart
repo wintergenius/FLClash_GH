@@ -26,6 +26,8 @@ enum _ListKind { tunneled, nonTunneled }
 
 class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
   bool _authorizing = false;
+  bool _saving = false;
+  bool _dirty = false;
 
   AccessDesktopStrings get _strings => AccessDesktopStrings.of(context);
 
@@ -42,6 +44,7 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
   Future<void> _handleEnable(bool value) async {
     if (!value) {
       _update((props) => props.copyWith(enable: false));
+      await _save();
       return;
     }
     if (_authorizing) {
@@ -67,12 +70,73 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
             .update((state) => state.copyWith.tun(enable: true));
       }
       _update((props) => props.copyWith(enable: true));
+      await _save();
     } finally {
       if (mounted) {
         setState(() {
           _authorizing = false;
         });
       }
+    }
+  }
+
+  void _markDirty() {
+    if (!_dirty) {
+      setState(() {
+        _dirty = true;
+      });
+    }
+  }
+
+  /// Re-applies the profile with the current lists. The Core hot-reloads the
+  /// rules between OnSuspend/OnRunning; the TUN adapter and the listeners stay
+  /// up, so nothing leaks past the tunnel while the rules are swapped.
+  Future<void> _save() async {
+    if (_saving) {
+      return;
+    }
+    setState(() {
+      _saving = true;
+    });
+    try {
+      final applied = await ref
+          .read(setupActionProvider.notifier)
+          .applyProfile();
+      if (!mounted) {
+        return;
+      }
+      if (applied) {
+        setState(() {
+          _dirty = false;
+        });
+        dialogs.showNotifier(_strings.applied, level: MessageLevel.success);
+      } else {
+        dialogs.showNotifier(_strings.applyFailed, level: MessageLevel.error);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleBack() async {
+    if (!_dirty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final res = await dialogs.showMessage(
+      title: _strings.title,
+      message: TextSpan(text: _strings.saveChangesPrompt),
+      confirmText: _strings.save,
+    );
+    if (res == true) {
+      await _save();
+    }
+    if (mounted) {
+      Navigator.of(context).pop();
     }
   }
 
@@ -92,20 +156,38 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
   };
 
   void _add(_ListKind kind, String? entry) {
-    final value = entry?.trim();
-    if (value == null || value.isEmpty) {
+    if (entry == null) {
       return;
     }
+    _addAll(kind, [entry]);
+  }
+
+  /// Adds entries, skipping blanks and case-insensitive duplicates.
+  void _addAll(_ListKind kind, Iterable<String> entries) {
+    final values = entries
+        .map((entry) => entry.trim())
+        .where((entry) => entry.isNotEmpty)
+        .toList();
+    if (values.isEmpty) {
+      return;
+    }
+    var changed = false;
     _update((props) {
       final list = List<String>.from(_listOf(props, kind));
-      final exists = list.any(
-        (item) => item.toLowerCase() == value.toLowerCase(),
-      );
-      if (exists) {
-        return props;
+      for (final value in values) {
+        final exists = list.any(
+          (item) => item.toLowerCase() == value.toLowerCase(),
+        );
+        if (!exists) {
+          list.add(value);
+          changed = true;
+        }
       }
-      return _withList(props, kind, [...list, value]);
+      return changed ? _withList(props, kind, list) : props;
     });
+    if (changed) {
+      _markDirty();
+    }
   }
 
   void _remove(_ListKind kind, String entry) {
@@ -113,6 +195,7 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
       final list = _listOf(props, kind).where((item) => item != entry).toList();
       return _withList(props, kind, list);
     });
+    _markDirty();
   }
 
   Future<void> _pickProcess(_ListKind kind) async {
@@ -150,7 +233,11 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
         strings: _strings,
       ),
     );
-    _add(kind, value);
+    if (value == null) {
+      return;
+    }
+    // Several names at once: "a.exe, b.exe" or one per line.
+    _addAll(kind, value.split(RegExp(r'[,;\r\n]+')));
   }
 
   Widget _buildStatus({
@@ -159,6 +246,7 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
   }) {
     final strings = _strings;
     final (IconData icon, String text) = switch (props) {
+      _ when _dirty => (Icons.save_outlined, strings.unsaved),
       AccessControlProps(enable: false) => (
         Icons.info_outline,
         strings.disabledHint,
@@ -267,7 +355,28 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
     final strings = _strings;
     return CommonScaffold(
       title: strings.title,
-      body: ListView(
+      actions: [
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: FilledButton.icon(
+            onPressed: _dirty && !_saving ? _save : null,
+            icon: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+            label: Text(strings.save),
+          ),
+        ),
+      ],
+      body: CommonPopScope(
+        onPop: (_) {
+          _handleBack();
+          return false;
+        },
+        child: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
           ListItem.toggle(
@@ -300,6 +409,7 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
             ),
           ),
         ],
+        ),
       ),
     );
   }
@@ -503,8 +613,27 @@ class AccessDesktopStrings {
   String get addFolder => _t('Folder', 'Папка');
   String get addName => _t('By name', 'По имени');
   String get nameHint => _t(
-    'e.g. discord or C:\\Games\\',
-    'например discord или C:\\Games\\',
+    'e.g. discord, msedge or C:\\Games\\ (several: comma-separated)',
+    'например discord, msedge или C:\\Games\\ (несколько — через запятую)',
+  );
+  String get save => _t('Save', 'Сохранить');
+  String get unsaved => _t(
+    'Changes are not applied yet: press Save. The rules are reloaded with '
+    'the tunnel up, nothing leaks.',
+    'Изменения ещё не применены: нажми «Сохранить». Правила перезагрузятся '
+    'при поднятом туннеле, утечки нет.',
+  );
+  String get applied => _t(
+    'Per-app rules applied',
+    'Правила по приложениям применены',
+  );
+  String get applyFailed => _t(
+    'Could not apply the profile, see the logs',
+    'Не удалось применить профиль, смотри логи',
+  );
+  String get saveChangesPrompt => _t(
+    'Apply the changed lists before leaving?',
+    'Применить изменённые списки перед выходом?',
   );
   String get entryHelp => _t(
     'A name matches the process name, .exe is optional. A path with slashes '
