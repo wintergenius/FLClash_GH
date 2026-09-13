@@ -1,3 +1,4 @@
+export 'access_rules.dart';
 export 'app_localizations.dart';
 export 'app_ports.dart';
 export 'changelog.dart';
@@ -49,3 +50,4 @@ export 'task_pool.dart';
 export 'text.dart';
 export 'webdav.dart';
 export 'yaml.dart';
+export 'windows_process.dart';

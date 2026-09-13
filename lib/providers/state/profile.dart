@@ -45,6 +45,15 @@ Future<SetupState> setupState(Ref ref, int? profileId) async {
   final overwriteType = profile?.overwriteType ?? OverwriteType.standard;
   final dns = ref.watch(patchClashConfigProvider.select((state) => state.dns));
   final overrideDns = ref.watch(overrideDnsProvider);
+  // Desktop per-app split: the lists live in the VPN settings and are
+  // rendered into rules here so that editing them re-applies the profile.
+  final accessRules = system.isWindows
+      ? DesktopAccessRules.build(
+          ref.watch(
+            vpnSettingProvider.select((state) => state.accessControlProps),
+          ),
+        )
+      : const <String>[];
   List<ProxyGroup> proxyGroups = [];
   List<Rule> rules = [];
   List<Rule> addedRules = [];
@@ -71,6 +80,7 @@ Future<SetupState> setupState(Ref ref, int? profileId) async {
     script: script,
     overrideDns: overrideDns,
     dns: dns,
+    accessRules: accessRules,
     matchTarget: overwriteType == OverwriteType.standard
         ? profile?.matchTarget
         : null,

@@ -365,6 +365,7 @@ class SetupAction extends _$SetupAction {
         addedRules: addedRules,
         defaultUA: defaultUA,
         authentication: networkSetting.authentication.credentials,
+        accessRules: setupState.accessRules,
         matchTarget: setupState.matchTarget,
       ),
     );
@@ -423,6 +424,27 @@ class SetupAction extends _$SetupAction {
       case AuthorizeCode.error:
         return true;
     }
+  }
+
+  /// Desktop per-app split only works in TUN mode. Runs the elevation flow
+  /// (Helper service install behind a UAC prompt on Windows) and restarts the
+  /// Core when the Helper was just installed. Returns whether TUN is
+  /// authorized afterwards; a declined prompt leaves it unauthorized.
+  Future<bool> authorizeTun() async {
+    final authorizationNotifier = ref.read(
+      authorizedTunEnableProvider.notifier,
+    );
+    if (ref.read(authorizedTunEnableProvider) ==
+        TunAuthorizationState.unauthorized) {
+      // A previous attempt was declined; allow a new prompt.
+      authorizationNotifier.value = TunAuthorizationState.none;
+    }
+    final shouldContinue = await requestAdmin(true);
+    if (!shouldContinue) {
+      await _restartCoreAfterAuthorization();
+    }
+    return ref.read(authorizedTunEnableProvider) ==
+        TunAuthorizationState.authorized;
   }
 
   /// An empty profile list is left alone: it is the first-run state, and it is

@@ -6,6 +6,7 @@ import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/views/about.dart';
 import 'package:fl_clash/views/access.dart';
+import 'package:fl_clash/views/access_desktop.dart';
 import 'package:fl_clash/views/application_setting.dart';
 import 'package:fl_clash/views/backup_and_restore.dart';
 import 'package:fl_clash/views/config/config.dart';
@@ -72,7 +73,7 @@ class _ToolViewState extends ConsumerState<ToolsView> {
         const _BackupItem(),
         if (system.isDesktop) const _HotkeyItem(),
         if (system.isWindows) const _LoopbackItem(),
-        if (system.isAndroid) const _AccessItem(),
+        if (system.isAndroid || system.isWindows) const _AccessItem(),
         const _ConfigItem(),
         const _AdvancedConfigItem(),
         const _SettingItem(),
@@ -214,6 +215,15 @@ class _AccessItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (system.isWindows) {
+      final strings = AccessDesktopStrings.of(context);
+      return ListItem.open(
+        leading: const Icon(Icons.alt_route),
+        title: Text(strings.title),
+        subtitle: Text(strings.menuDesc),
+        widget: const AccessDesktopView(),
+      );
+    }
     return ListItem.open(
       leading: const Icon(Icons.view_list),
       title: Text(context.appLocalizations.accessControl),

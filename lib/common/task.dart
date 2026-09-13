@@ -293,6 +293,11 @@ Future<({String yaml, String md5})> _makeRealProfileTask(
   } else {
     rules = data.rules.map((item) => item.rawValue).toList();
   }
+  // Desktop per-app split goes first: it decides which processes see the
+  // profile rules at all.
+  if (data.accessRules.isNotEmpty) {
+    rules = [...data.accessRules, ...rules];
+  }
   if (data.proxyGroups.isNotEmpty) {
     rawConfig['proxy-groups'] = data.proxyGroups;
   }
