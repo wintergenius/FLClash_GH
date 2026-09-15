@@ -88,14 +88,19 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
     }
   }
 
-  /// Re-applies the profile with the current lists. The Core hot-reloads the
-  /// rules between OnSuspend/OnRunning; the TUN adapter and the listeners stay
-  /// up, so nothing leaks past the tunnel while the rules are swapped.
+  /// Applies the current lists by restarting the Core process, not by
+  /// hot-reloading the config.
   ///
-  /// Rules are evaluated when a connection opens, so connections that already
-  /// exist (a browser's HTTP/2 pool, QUIC sessions, a game's sockets) would
-  /// keep their old verdict indefinitely. They are closed after the apply;
-  /// applications reconnect and land under the new rules.
+  /// A hot reload (`applyProfile`) builds a fresh set of outbounds and only
+  /// swaps the proxy map; the previous WireGuard outbound keeps its UDP socket
+  /// and timers alive until the garbage collector reaches it. Two or more
+  /// devices with the same key then take turns handshaking with the node and
+  /// steal the session from each other every few seconds (A31-BUG-4,
+  /// docs/canary/node-20.md CAN-47/CAN-50): the tunnel goes dark in 30-40 s
+  /// windows for every application behind the TUN. Restarting the Core kills
+  /// the process, so every socket is closed for certain; the restart worker
+  /// re-applies the profile with the new lists and brings the TUN back up.
+  /// Applications reconnect and land under the new rules.
   Future<void> _save() async {
     if (_saving) {
       return;
@@ -105,16 +110,12 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
     });
     try {
       final applied = await ref
-          .read(setupActionProvider.notifier)
-          .applyProfile();
+          .read(coreActionProvider.notifier)
+          .restartCore();
       if (!mounted) {
         return;
       }
       if (applied) {
-        await ref.read(coreActionProvider.notifier).closeConnections();
-        if (!mounted) {
-          return;
-        }
         setState(() {
           _dirty = false;
         });
