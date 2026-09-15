@@ -155,7 +155,10 @@ jobs:
           for apk in dist/*.apk; do
             certs="$("$apksigner" verify --print-certs "$apk")"
             echo "$apk"; echo "$certs" | grep -E "certificate DN|SHA-256 digest"
-            echo "$certs" | grep -q "CN=Android Debug" && { echo "::error::$apk is signed with the debug key"; exit 1; }
+            if echo "$certs" | grep -q "CN=Android Debug"; then
+              echo "::error::$apk is signed with the debug key"
+              exit 1
+            fi
           done
 
       - name: Upload artifacts
