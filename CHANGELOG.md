@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.3 (2026-09-15)
+
+**Bug Fixes**
+
+- **android** Sign release APKs with the fork key, refuse debug-signed builds (8944049)
+
 ## v1.0.2 (2026-09-15)
 
 **Features**
