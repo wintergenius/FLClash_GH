@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.2 (2026-09-15)
+
+**Features**
+
+- **android** Publish signed Android builds with the fixed Core (52b0e20)
+
 ## v1.0.1 (2026-09-15)
 
 **Bug Fixes**

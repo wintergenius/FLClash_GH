@@ -2,6 +2,24 @@
   "schemaVersion": 2,
   "versions": [
     {
+      "version": "1.0.2",
+      "tag": "v1.0.2",
+      "date": "2026-09-15",
+      "prerelease": false,
+      "groups": [
+        {
+          "type": "feat",
+          "entries": [
+            {
+              "id": "52b0e20",
+              "scope": "android",
+              "text": "Publish signed Android builds with the fixed Core"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.0.1",
       "tag": "v1.0.1",
       "date": "2026-09-15",
