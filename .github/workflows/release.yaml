@@ -1,9 +1,12 @@
 name: release
 
-# Windows-only pipeline of the FlClash GH fork. Every push to the fork branch
-# builds the installer and the portable zip as artifacts; a `v*` tag also
-# publishes them as a GitHub release, which the app's built-in update check
-# (constant `repository` in lib/common/constant.dart) reads.
+# Windows + Android pipeline of the FlClash GH fork. Every push to the fork
+# branch builds the Windows installer/zip and the signed Android APKs as
+# artifacts; a `v*` tag also publishes them as a GitHub release, which the
+# app's built-in update check (constant `repository` in lib/common/constant.dart)
+# reads. Android signing needs the KEYSTORE (base64 jks), KEY_ALIAS,
+# STORE_PASSWORD and KEY_PASSWORD repository secrets; without them the Gradle
+# release config falls back to the debug key and the `.dev` application id.
 
 on:
   push:
@@ -20,6 +23,7 @@ concurrency:
 env:
   FLUTTER_VERSION: '3.47.4'
   GO_VERSION: '1.27.1'
+  NDK_VERSION: r28c
 
 jobs:
   build-windows:
@@ -70,10 +74,81 @@ jobs:
           path: ./dist
           overwrite: true
 
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: core/go.sum
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          workspaces: services/helper
+          cache-directories: .dart_tool/hooks_runner
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Get Flutter dependencies
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Setup Android signing
+        run: |
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/keystore.jks
+          {
+            echo "keyAlias=${{ secrets.KEY_ALIAS }}"
+            echo "storePassword=${{ secrets.STORE_PASSWORD }}"
+            echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
+          } >> android/local.properties
+
+      - name: Build APKs (split per ABI)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: dart setup.dart android --env stable -v
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-android
+          path: ./dist
+          overwrite: true
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ build-windows ]
+    needs: [ build-windows, build-android ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
