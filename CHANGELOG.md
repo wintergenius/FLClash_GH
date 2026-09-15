@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.1 (2026-09-15)
+
+**Bug Fixes**
+
+- **desktop,core** Restart the Core on per-app save, close replaced outbounds (687c54f)
+
 ## v1.0.0 (2026-09-14)
 
 **Features**

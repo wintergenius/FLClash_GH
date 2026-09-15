@@ -2,6 +2,24 @@
   "schemaVersion": 2,
   "versions": [
     {
+      "version": "1.0.1",
+      "tag": "v1.0.1",
+      "date": "2026-09-15",
+      "prerelease": false,
+      "groups": [
+        {
+          "type": "fix",
+          "entries": [
+            {
+              "id": "687c54f",
+              "scope": "desktop,core",
+              "text": "Restart the Core on per-app save, close replaced outbounds"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "1.0.0",
       "tag": "v1.0.0",
       "date": "2026-09-14",
