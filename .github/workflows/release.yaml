@@ -124,19 +124,39 @@ jobs:
           flutter --version
           flutter pub get
 
+      # Flutter may have written local.properties without a trailing newline, so
+      # the block starts with an empty line: appended keys glued to the last line
+      # are invisible to Gradle and the release silently falls back to the debug key.
       - name: Setup Android signing
         run: |
           echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/keystore.jks
           {
+            echo ""
             echo "keyAlias=${{ secrets.KEY_ALIAS }}"
             echo "storePassword=${{ secrets.STORE_PASSWORD }}"
             echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
           } >> android/local.properties
+          test -s android/app/keystore.jks || { echo "keystore.jks is empty: KEYSTORE secret missing"; exit 1; }
+          for k in keyAlias storePassword keyPassword; do
+            grep -qE "^$k=." android/local.properties || { echo "$k missing in android/local.properties"; exit 1; }
+          done
+          echo "keystore $(wc -c < android/app/keystore.jks) bytes, signing keys present"
 
       - name: Build APKs (split per ABI)
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: dart setup.dart android --env stable -v
+
+      # A debug-signed APK carries the `.dev` application id and cannot update
+      # the fork on users' phones; refuse to publish it.
+      - name: Verify APK signature
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          for apk in dist/*.apk; do
+            certs="$("$apksigner" verify --print-certs "$apk")"
+            echo "$apk"; echo "$certs" | grep -E "certificate DN|SHA-256 digest"
+            echo "$certs" | grep -q "CN=Android Debug" && { echo "::error::$apk is signed with the debug key"; exit 1; }
+          done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
