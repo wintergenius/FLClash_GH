@@ -160,7 +160,7 @@ abstract class VpnProps with _$VpnProps {
     @Default(true) bool systemProxy,
     @Default(false) bool ipv6,
     @Default(true) bool allowBypass,
-    @Default(false) bool dnsHijacking,
+    @Default(true) bool dnsHijacking,
     @Default(defaultAccessControlProps) AccessControlProps accessControlProps,
   }) = _VpnProps;
 
@@ -277,7 +277,10 @@ abstract class Config with _$Config {
 
   factory Config.realFromJson(Map<String, Object?>? json) {
     if (json == null) {
-      return const Config(themeProps: defaultThemeProps);
+      return Config(
+        themeProps: defaultThemeProps,
+        patchClashConfig: defaultPlatformClashConfig,
+      );
     }
     return _$ConfigFromJson(json);
   }

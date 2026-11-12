@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.4 (2026-11-11)
+
+**Features**
+
+- **profiles,desktop,android** Persistent x-hwid subscription headers, unlimited expiry display, deep-link profile deduplication, Windows out-of-the-box TUN/gVisor/protocol registration, and Android MTU 1360 + DNS hijacking defaults (oi44m2)
+
 ## v1.0.3 (2026-09-15)
 
 **Bug Fixes**

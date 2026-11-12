@@ -64,10 +64,17 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
         dialogs.showNotifier(_strings.tunDeclined, level: MessageLevel.warning);
         return;
       }
-      if (!ref.read(patchClashConfigProvider).tun.enable) {
+      final currentPatch = ref.read(patchClashConfigProvider);
+      if (!currentPatch.tun.enable ||
+          currentPatch.findProcessMode != FindProcessMode.always) {
         ref
             .read(patchClashConfigProvider.notifier)
-            .update((state) => state.copyWith.tun(enable: true));
+            .update(
+              (state) => state.copyWith(
+                findProcessMode: FindProcessMode.always,
+                tun: state.tun.copyWith(enable: true),
+              ),
+            );
       }
       _update((props) => props.copyWith(enable: true));
       await _save();

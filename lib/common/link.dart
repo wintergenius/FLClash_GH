@@ -7,6 +7,10 @@ import 'print.dart';
 import 'protocol.dart';
 
 typedef InstallConfigCallBack = void Function(String url);
+typedef InstallConfigWithNameCallBack = void Function(
+  String url,
+  String? name,
+);
 
 class LinkManager {
   static LinkManager? _instance;
@@ -30,27 +34,41 @@ class LinkManager {
   }
 
   Future<void> initAppLinksListen(
-    Function(String url) installConfigCallBack,
-  ) async {
+    Function(String url) installConfigCallBack, {
+    InstallConfigWithNameCallBack? onInstallConfig,
+  }) async {
     commonPrint.log('initAppLinksListen');
     destroy();
     subscription = uriLinkStream().listen((uri) {
-      _handle(uri, installConfigCallBack);
+      _handle(uri, installConfigCallBack, onInstallConfig);
     });
     final pending = _pendingUri;
     _pendingUri = null;
     if (pending != null) {
-      _handle(pending, installConfigCallBack);
+      _handle(pending, installConfigCallBack, onInstallConfig);
     }
   }
 
-  void _handle(Uri uri, Function(String url) installConfigCallBack) {
-    commonPrint.log('onAppLink: $uri');
+  void _handle(
+    Uri uri,
+    Function(String url) installConfigCallBack,
+    InstallConfigWithNameCallBack? onInstallConfig,
+  ) {
+    final safeLog = uri.host == 'install-config'
+        ? '${uri.scheme}://${uri.host}${uri.path}?hasUrl=${uri.queryParameters.containsKey("url")}'
+        : '${uri.scheme}://${uri.host}${uri.path}';
+    commonPrint.log('onAppLink: $safeLog');
     if (uri.host == 'install-config') {
       final parameters = uri.queryParameters;
-      final url = parameters['url'];
-      if (url != null) {
-        installConfigCallBack(url);
+      final url = parameters['url']?.trim();
+      if (url != null && url.isNotEmpty) {
+        final rawName = parameters['name']?.trim();
+        final name = (rawName != null && rawName.isNotEmpty) ? rawName : null;
+        if (onInstallConfig != null) {
+          onInstallConfig(url, name);
+        } else {
+          installConfigCallBack(url);
+        }
       }
     }
   }

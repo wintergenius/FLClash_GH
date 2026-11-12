@@ -56,9 +56,14 @@ class ProfilesAction extends _$ProfilesAction {
     }
   }
 
-  void putProfile(Profile profile) {
+  void putProfile(Profile profile, {bool activate = false}) {
     ref.read(profilesProvider.notifier).put(profile);
-    if (ref.read(currentProfileIdProvider) != null) return;
+    final currentId = ref.read(currentProfileIdProvider);
+    if (!activate && currentId != null) return;
+    if (currentId == profile.id) {
+      ref.read(setupActionProvider.notifier).applyProfileDebounce(silence: true);
+      return;
+    }
     ref.read(currentProfileIdProvider.notifier).value = profile.id;
   }
 
@@ -112,26 +117,38 @@ class ProfilesAction extends _$ProfilesAction {
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
-      putProfile(profile);
+      putProfile(profile, activate: true);
     }
   }
 
-  Future<void> addProfileFormURL(String url) async {
+  Future<void> addProfileFormURL(String url, {String? label}) async {
+    final trimmedUrl = url.trim();
+    if (trimmedUrl.isEmpty) return;
+    final cleanLabel = (label != null && label.trim().isNotEmpty)
+        ? label.trim()
+        : null;
     if (globalState.navigatorKey.currentState?.canPop() ?? false) {
       globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
     }
     ref.read(currentPageLabelProvider.notifier).value = PageLabel.profiles;
+    final existing = ref
+        .read(profilesProvider)
+        .where((item) => item.url.trim() == trimmedUrl)
+        .firstOrNull;
     final profile = await globalState.loadingRun(
       tag: LoadingTag.profiles,
       () async {
-        return Profile.normal(
-          url: url,
-        ).update(validate: (path) => _core.validateConfig(path));
+        final seed = existing != null
+            ? (cleanLabel != null
+                  ? existing.copyWith(label: cleanLabel)
+                  : existing)
+            : Profile.normal(label: cleanLabel, url: trimmedUrl);
+        return seed.update(validate: (path) => _core.validateConfig(path));
       },
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
-      putProfile(profile);
+      putProfile(profile, activate: true);
     }
   }
 

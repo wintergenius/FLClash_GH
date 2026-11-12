@@ -25,6 +25,7 @@ final _cardCases = <_CardCase>[
     'TUN',
     const TUNButton(),
     (container) => container.read(patchClashConfigProvider).tun.enable,
+    initial: system.isWindows,
   ),
   _CardCase(
     'system proxy',

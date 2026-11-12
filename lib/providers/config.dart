@@ -91,7 +91,7 @@ class _PatchClashConfig extends _$PatchClashConfig
     with AutoDisposeNotifierMixin {
   @override
   PatchClashConfig build() {
-    return const PatchClashConfig();
+    return defaultPlatformClashConfig;
   }
 }
 

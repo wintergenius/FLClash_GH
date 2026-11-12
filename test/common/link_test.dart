@@ -39,6 +39,25 @@ void main() {
     expect(received, ['https://example.com/a.yaml']);
   });
 
+  test('an install-config link passes name to onInstallConfig', () async {
+    final named = <(String, String?)>[];
+    await linkManager.initAppLinksListen(
+      received.add,
+      onInstallConfig: (url, name) => named.add((url, name)),
+    );
+
+    await emit(
+      'flclash://install-config?url=https%3A%2F%2Fghosthop.net%2Fsub%2Ftok&name=GhostHop',
+    );
+    await emit('flclash://install-config?url=https://example.com/b.yaml&name=');
+
+    expect(received, isEmpty);
+    expect(named, [
+      ('https://ghosthop.net/sub/tok', 'GhostHop'),
+      ('https://example.com/b.yaml', null),
+    ]);
+  });
+
   test('an install-config link without a url is ignored', () async {
     await listen();
 

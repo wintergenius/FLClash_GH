@@ -292,6 +292,6 @@ class VpnService : SystemVpnService(), ManagedService {
         private const val NET_ANY = "0.0.0.0"
         private const val NET_ANY6 = "::"
         private const val LOCAL_HOST = "127.0.0.1"
-        private const val MTU = 9000
+        private const val MTU = 1360
     }
 }

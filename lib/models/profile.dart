@@ -29,8 +29,13 @@ abstract class SubscriptionInfo with _$SubscriptionInfo {
     final list = info.split(';');
     final Map<String, int?> map = {};
     for (final i in list) {
-      final keyValue = i.trim().split('=');
-      map[keyValue[0]] = int.tryParse(keyValue[1]);
+      final trimmed = i.trim();
+      if (trimmed.isEmpty) continue;
+      final eqIndex = trimmed.indexOf('=');
+      if (eqIndex <= 0) continue;
+      final key = trimmed.substring(0, eqIndex).trim().toLowerCase();
+      final value = trimmed.substring(eqIndex + 1).trim();
+      map[key] = int.tryParse(value);
     }
     return SubscriptionInfo(
       upload: map['upload'] ?? 0,
@@ -179,12 +184,18 @@ extension ProfileExtension on Profile {
   Future<Profile> update({required ValidateConfig validate}) async {
     final response = await request.getFileResponseForUrl(url);
     final disposition = response.headers.value('content-disposition');
+    final profileTitle = response.headers.value('profile-title');
+    final updateInterval = parseProfileUpdateInterval(
+      response.headers.value('profile-update-interval'),
+    );
     final userinfo = response.headers.value('subscription-userinfo');
     return copyWith(
       label: label.takeFirstValid([
+        decodeProfileTitle(profileTitle),
         getFileNameForDisposition(disposition),
         id.toString(),
       ]),
+      autoUpdateDuration: updateInterval ?? autoUpdateDuration,
       subscriptionInfo: SubscriptionInfo.formHString(userinfo),
     ).saveFile(response.data ?? Uint8List.fromList([]), validate: validate);
   }

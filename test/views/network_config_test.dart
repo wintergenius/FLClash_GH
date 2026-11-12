@@ -1,3 +1,4 @@
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
@@ -31,6 +32,7 @@ final _toggleCases = <_ToggleCase>[
     'TUN',
     const TUNItem(),
     (c) => c.read(patchClashConfigProvider).tun.enable,
+    initial: system.isWindows,
   ),
   _ToggleCase(
     'allow bypass',
@@ -61,6 +63,7 @@ final _toggleCases = <_ToggleCase>[
     'dns hijacking',
     const DNSHijackingItem(),
     (c) => c.read(vpnSettingProvider).dnsHijacking,
+    initial: true,
   ),
 ];
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -39,12 +40,68 @@ class Request {
     );
   }
 
+  Future<Map<String, String>?> _subscriptionHeaders(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      return null;
+    }
+    return hwidManager.getHeaders();
+  }
+
   Future<Response<Uint8List>> getFileResponseForUrl(String url) async {
     try {
-      return await _clashDio.get<Uint8List>(
-        url,
-        options: Options(responseType: ResponseType.bytes),
-      );
+      final initialUri = Uri.tryParse(url);
+      var currentUrl = url;
+      var currentUri = initialUri;
+      final initialHeaders = await _subscriptionHeaders(url);
+
+      for (var hop = 0; hop <= 3; hop++) {
+        final attachSubHeaders = initialHeaders != null &&
+            currentUri != null &&
+            currentUri.scheme.toLowerCase() == 'https' &&
+            initialUri != null &&
+            currentUri.authority.toLowerCase() ==
+                initialUri.authority.toLowerCase();
+
+        final response = await _clashDio.get<Uint8List>(
+          currentUrl,
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: attachSubHeaders ? initialHeaders : null,
+            followRedirects: false,
+            validateStatus: (status) =>
+                status != null && status >= 200 && status < 400,
+          ),
+        );
+
+        final statusCode = response.statusCode ?? 0;
+        if (statusCode >= 300 && statusCode < 400) {
+          final location = response.headers.value(HttpHeaders.locationHeader);
+          if (location == null || location.trim().isEmpty || hop == 3) {
+            throw DioException.badResponse(
+              statusCode: statusCode,
+              requestOptions: response.requestOptions,
+              response: response,
+            );
+          }
+          final resolvedUri =
+              (currentUri ?? Uri.parse(currentUrl)).resolve(location.trim());
+          if (initialUri?.scheme.toLowerCase() == 'https' &&
+              resolvedUri.scheme.toLowerCase() != 'https') {
+            throw DioException(
+              requestOptions: response.requestOptions,
+              response: response,
+              type: DioExceptionType.badResponse,
+              error: 'Refusing insecure HTTPS-to-HTTP subscription redirect',
+            );
+          }
+          currentUri = resolvedUri;
+          currentUrl = resolvedUri.toString();
+          continue;
+        }
+        return response;
+      }
+      throw StateError('Redirect loop exceeded');
     } catch (e) {
       commonPrint.log(
         'getFileResponseForUrl error ${compactError(e)}',
@@ -58,7 +115,9 @@ class Request {
     try {
       return await _clashDio.get<String>(
         url,
-        options: Options(responseType: ResponseType.plain),
+        options: Options(
+          responseType: ResponseType.plain,
+        ),
       );
     } catch (e) {
       commonPrint.log(
@@ -168,4 +227,35 @@ String? getFileNameForDisposition(String? disposition) {
   );
   if (fileNameKey.isEmpty) return null;
   return parameters[fileNameKey];
+}
+
+String? decodeProfileTitle(String? raw) {
+  if (raw == null) return null;
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return null;
+  if (trimmed.toLowerCase().startsWith('base64:')) {
+    final encoded = trimmed.substring(7).trim();
+    if (encoded.isEmpty) return null;
+    try {
+      final decoded = utf8
+          .decode(
+            base64.decode(base64.normalize(encoded)),
+            allowMalformed: true,
+          )
+          .trim();
+      return decoded.isEmpty ? null : decoded;
+    } catch (_) {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+Duration? parseProfileUpdateInterval(String? raw) {
+  if (raw == null) return null;
+  final hours = int.tryParse(raw.trim());
+  if (hours == null || hours < 1 || hours > 168) {
+    return null;
+  }
+  return Duration(hours: hours);
 }

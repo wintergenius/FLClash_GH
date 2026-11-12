@@ -90,32 +90,37 @@ class ApplicationState extends ConsumerState<Application> {
   }
 
   void _initLink() {
-    linkManager.initAppLinksListen((url) async {
-      unawaited(window?.show());
-      final message = currentAppLocalizations.createProfileFromUrlTip(url);
-      final parts = message.split(url);
-      final res = await dialogs.showMessage(
-        title: currentAppLocalizations.addProfile,
-        message: TextSpan(
-          children: [
-            TextSpan(text: parts.first),
-            TextSpan(
-              text: url,
-              style: TextStyle(
-                color: context.colorScheme.primary,
-                decoration: TextDecoration.underline,
-                decorationColor: context.colorScheme.primary,
+    linkManager.initAppLinksListen(
+      (_) {},
+      onInstallConfig: (url, name) async {
+        unawaited(window?.show());
+        final message = currentAppLocalizations.createProfileFromUrlTip(url);
+        final parts = message.split(url);
+        final res = await dialogs.showMessage(
+          title: currentAppLocalizations.addProfile,
+          message: TextSpan(
+            children: [
+              TextSpan(text: parts.first),
+              TextSpan(
+                text: url,
+                style: TextStyle(
+                  color: context.colorScheme.primary,
+                  decoration: TextDecoration.underline,
+                  decorationColor: context.colorScheme.primary,
+                ),
               ),
-            ),
-            if (parts.length > 1) TextSpan(text: parts.last),
-          ],
-        ),
-      );
-      if (res != true) return;
-      unawaited(
-        ref.read(profilesActionProvider.notifier).addProfileFormURL(url),
-      );
-    });
+              if (parts.length > 1) TextSpan(text: parts.last),
+            ],
+          ),
+        );
+        if (res != true) return;
+        unawaited(
+          ref
+              .read(profilesActionProvider.notifier)
+              .addProfileFormURL(url, label: name),
+        );
+      },
+    );
   }
 
   void _autoUpdateProfilesTask() {

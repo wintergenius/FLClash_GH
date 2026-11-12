@@ -9,6 +9,14 @@ part 'generated/clash_config.g.dart';
 const defaultClashConfig = PatchClashConfig();
 
 const defaultTun = Tun();
+const defaultWindowsTun = Tun(
+  enable: true,
+  autoRoute: true,
+  stack: TunStack.gvisor,
+);
+Tun get defaultPlatformTun => system.isWindows ? defaultWindowsTun : defaultTun;
+PatchClashConfig get defaultPlatformClashConfig =>
+    PatchClashConfig(tun: defaultPlatformTun);
 const defaultDns = Dns();
 const defaultGeoXUrl = {
   GeoResource.MMDB:
@@ -250,7 +258,7 @@ abstract class Tun with _$Tun {
     @Default(false) bool enable,
     @Default(appName) String device,
     @JsonKey(name: 'auto-route') @Default(false) bool autoRoute,
-    @Default(TunStack.mixed) TunStack stack,
+    @Default(TunStack.gvisor) TunStack stack,
     @JsonKey(name: 'dns-hijack') @Default(['any:53']) List<String> dnsHijack,
     @JsonKey(name: 'route-address') @Default([]) List<String> routeAddress,
   }) = _Tun;
@@ -259,12 +267,12 @@ abstract class Tun with _$Tun {
 
   factory Tun.safeFormJson(Map<String, Object?>? json) {
     if (json == null) {
-      return defaultTun;
+      return defaultPlatformTun;
     }
     return decodeOrRestoreDefault(
       'tun config',
       () => Tun.fromJson(json),
-      () => defaultTun,
+      () => defaultPlatformTun,
     );
   }
 }
@@ -576,12 +584,12 @@ abstract class PatchClashConfig with _$PatchClashConfig {
 
   factory PatchClashConfig.safeFormJson(Map<String, Object?>? json) {
     if (json == null) {
-      return defaultClashConfig;
+      return defaultPlatformClashConfig;
     }
     return decodeOrRestoreDefault(
       'clash config',
       () => PatchClashConfig.fromJson(json),
-      () => defaultClashConfig,
+      () => defaultPlatformClashConfig,
     );
   }
 }

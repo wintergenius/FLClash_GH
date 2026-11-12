@@ -28,32 +28,39 @@ class SubscriptionInfoView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final info = subscriptionInfo;
-    if (info == null || info.total == 0) {
+    if (info == null || (info.total <= 0 && info.expire <= 0)) {
       return const SizedBox.shrink();
     }
+    final expireShow = info.expire != 0
+        ? DateTime.fromMillisecondsSinceEpoch(info.expire * 1000).show
+        : context.appLocalizations.infiniteTime;
+    final metaStyle = context.textTheme.bodySmall?.toLight;
+    final expireText = Text(
+      expireShow,
+      style: metaStyle,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+    if (info.total <= 0) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: expireText,
+      );
+    }
+
     final use = info.upload + info.download;
     final total = info.total;
     final progress = (use / total).clamp(0.0, 1.0).toDouble();
 
     final useShow = use.traffic.show;
     final totalShow = total.traffic.show;
-    final expireShow = info.expire != 0
-        ? DateTime.fromMillisecondsSinceEpoch(info.expire * 1000).show
-        : context.appLocalizations.infiniteTime;
     final valueStyle = context.textTheme.bodyMedium?.toSoftBold.copyWith(
       color: context.colorScheme.onSurfaceVariant,
     );
-    final metaStyle = context.textTheme.bodySmall?.toLight;
     final trafficLabel = '$useShow / $totalShow';
     final trafficText = Text(
       trafficLabel,
       style: valueStyle,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-    );
-    final expireText = Text(
-      expireShow,
-      style: metaStyle,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     );
@@ -114,20 +121,22 @@ class SubscriptionInfoDetailView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          generateSectionV3(
-            title: appLocalizations.trafficUsage,
-            items: [
-              _buildItem(
-                label: appLocalizations.usedTraffic,
-                value: used.traffic.show,
-              ),
-              _buildItem(
-                label: appLocalizations.totalTraffic,
-                value: subscriptionInfo.total.traffic.show,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
+          if (subscriptionInfo.total > 0) ...[
+            generateSectionV3(
+              title: appLocalizations.trafficUsage,
+              items: [
+                _buildItem(
+                  label: appLocalizations.usedTraffic,
+                  value: used.traffic.show,
+                ),
+                _buildItem(
+                  label: appLocalizations.totalTraffic,
+                  value: subscriptionInfo.total.traffic.show,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
           generateSectionV3(
             title: appLocalizations.expireTime,
             items: [_buildItem(value: expire)],

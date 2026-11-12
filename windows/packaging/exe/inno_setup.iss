@@ -99,5 +99,12 @@ Source: "{{SOURCE_DIR}}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 [Icons]
 Name: "{autoprograms}\\{{DISPLAY_NAME}}"; Filename: "{app}\\{{EXECUTABLE_NAME}}"
 Name: "{autodesktop}\\{{DISPLAY_NAME}}"; Filename: "{app}\\{{EXECUTABLE_NAME}}"; Tasks: desktopicon
+
+[Registry]
+Root: HKLM; Subkey: "Software\\Classes\\flclash"; ValueType: string; ValueName: ""; ValueData: "URL:FlClash Protocol"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\\Classes\\flclash"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKLM; Subkey: "Software\\Classes\\flclash\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\\{{EXECUTABLE_NAME}},0"
+Root: HKLM; Subkey: "Software\\Classes\\flclash\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: """{app}\\{{EXECUTABLE_NAME}}"" ""%1"""
+
 [Run]
 Filename: "{app}\\{{EXECUTABLE_NAME}}"; Description: "{cm:LaunchProgram,{{DISPLAY_NAME}}}"; Flags: {% if PRIVILEGES_REQUIRED == 'admin' %}runascurrentuser{% endif %} nowait postinstall skipifsilent
