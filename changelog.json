@@ -11,9 +11,14 @@
           "type": "feat",
           "entries": [
             {
-              "id": "v093mrg",
+              "id": "ef28321",
+              "scope": "android",
+              "text": "Включено из коробки раздельное туннелирование для 200+ российских банков, Госуслуг, маркетплейсов и сервисов с авто-подхватом пакетов ru.*/su.* и RuStore (браузеры остаются в VPN) и парольной защитой локального порта 127.0.0.1:7890 от раскрытия IP нод"
+            },
+            {
+              "id": "ef28321",
               "scope": "upstream,update",
-              "text": "Merge upstream FlClash v0.9.3 (mihomo v1.19.33, prism_ui, gomobile) and wire in-app self-update to wintergenius/FLClash_GH"
+              "text": "Обновлена база приложения до FlClash v0.9.3 (ядро Mihomo v1.19.33, обновлённый интерфейс) и подключено встроенное самообновление внутри приложения из репозитория FLClash_GH"
             }
           ]
         },
@@ -21,14 +26,14 @@
           "type": "fix",
           "entries": [
             {
-              "id": "ghandf1",
+              "id": "ef28321",
               "scope": "android,core",
-              "text": "Seamless AmneziaWG network roaming (validated network priority, 464xlat route fingerprint, ClientBind rebind + keepalive, StartTun socket protection)"
+              "text": "Бесшовное переключение между Wi-Fi и мобильной сетью для AmneziaWG (приоритет проверенных сетей, поддержка 464xlat, мгновенный ребинд сокетов и keepalive без зависаний туннеля, защита пред-открытых сокетов при старте)"
             },
             {
-              "id": "ghandf2",
+              "id": "ef28321",
               "scope": "android,config",
-              "text": "Disable VpnService HTTP proxy by default with v1.0.4 upgrade migration, enable store-fake-ip, and clean bypass domain defaults"
+              "text": "Отключён по умолчанию системный HTTP-прокси VpnService (с авто-миграцией при обновлении с v1.0.4), включено сохранение кэша FakeIP (store-fake-ip) и очищен список системных исключений"
             }
           ]
         }

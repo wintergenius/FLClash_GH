@@ -4,12 +4,13 @@
 
 **Features**
 
-- **upstream,update** Merge upstream FlClash v0.9.3 (mihomo v1.19.33, prism_ui, gomobile) and wire in-app self-update to wintergenius/FLClash_GH (v093mrg)
+- **android** Включено из коробки раздельное туннелирование для 200+ российских банков, Госуслуг, маркетплейсов и сервисов с авто-подхватом пакетов ru.*/su.* и RuStore (браузеры остаются в VPN) и парольной защитой локального порта 127.0.0.1:7890 от раскрытия IP нод (ef28321)
+- **upstream,update** Обновлена база приложения до FlClash v0.9.3 (ядро Mihomo v1.19.33, обновлённый интерфейс) и подключено встроенное самообновление внутри приложения из репозитория FLClash_GH (ef28321)
 
 **Bug Fixes**
 
-- **android,core** Seamless AmneziaWG network roaming (validated network priority, 464xlat route fingerprint, ClientBind rebind + keepalive, StartTun socket protection) (ghandf1)
-- **android,config** Disable VpnService HTTP proxy by default with v1.0.4 upgrade migration, enable store-fake-ip, and clean bypass domain defaults (ghandf2)
+- **android,core** Бесшовное переключение между Wi-Fi и мобильной сетью для AmneziaWG (приоритет проверенных сетей, поддержка 464xlat, мгновенный ребинд сокетов и keepalive без зависаний туннеля, защита пред-открытых сокетов при старте) (ef28321)
+- **android,config** Отключён по умолчанию системный HTTP-прокси VpnService (с авто-миграцией при обновлении с v1.0.4), включено сохранение кэша FakeIP (store-fake-ip) и очищен список системных исключений (ef28321)
 
 ## v1.0.4 (2026-11-11)
 
