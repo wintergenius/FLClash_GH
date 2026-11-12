@@ -160,6 +160,7 @@ func applyConfig(params *SetupParams) error {
 		cfg = fallback
 	}
 
+	cancelPostRoamCheck()
 	currentConfig = cfg
 	hub.ApplyConfig(cfg)
 	patchSelectGroup(params.SelectedMap)

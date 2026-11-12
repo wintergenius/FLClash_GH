@@ -33,15 +33,25 @@ internal class RouteSwitchTracker {
     var hadDisconnect: Boolean = false
         private set
 
-    fun onPreferredRoute(fingerprint: RouteFingerprint?): Boolean {
+    fun onPreferredRoute(
+        fingerprint: RouteFingerprint?,
+        vpnIpv6Enabled: Boolean = false,
+    ): Boolean {
         if (fingerprint == null || !fingerprint.hasUsableAddress) {
             if (lastFingerprint != null) {
                 hadDisconnect = true
             }
             return false
         }
-        val shouldReset = lastFingerprint != null &&
-            (fingerprint != lastFingerprint || hadDisconnect)
+        val previous = lastFingerprint
+        val shouldReset = when {
+            previous == null -> false
+            hadDisconnect -> true
+            fingerprint.netHandle != previous.netHandle -> true
+            fingerprint.hasIpv4 != previous.hasIpv4 -> true
+            vpnIpv6Enabled && fingerprint.hasIpv6 != previous.hasIpv6 -> true
+            else -> false
+        }
         lastFingerprint = fingerprint
         hadDisconnect = false
         return shouldReset
@@ -222,14 +232,15 @@ object NetworkObserver {
                 hasIpv6 = info.hasIpv6,
             )
         }
-        if (routeSwitchTracker.onPreferredRoute(fingerprint)) {
+        val vpnIpv6Enabled = ServiceConfig.vpnOptions?.ipv6 == true
+        if (routeSwitchTracker.onPreferredRoute(fingerprint, vpnIpv6Enabled = vpnIpv6Enabled)) {
             Core.resetNetwork()
         }
     }
 }
 
 private const val DNS_PORT = 53
-private const val NETWORK_UPDATE_DELAY_MILLIS = 350L
+private const val NETWORK_UPDATE_DELAY_MILLIS = 120L
 
 private fun InetAddress.asSocketAddressText(port: Int): String = when (this) {
     is Inet6Address -> "[$hostAddress]:$port"

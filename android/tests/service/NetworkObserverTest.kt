@@ -88,4 +88,38 @@ class NetworkObserverTest {
         )
         assertFalse(tracker.hadDisconnect)
     }
+
+    @Test
+    fun `delayed slaac ipv6 flap on active ipv4 wifi does not reset unless vpn ipv6 enabled`() {
+        val tracker = RouteSwitchTracker()
+
+        // Initial Wi-Fi with IPv4 only.
+        assertFalse(
+            tracker.onPreferredRoute(
+                RouteFingerprint(netHandle = 300L, hasIpv4 = true, hasIpv6 = false),
+                vpnIpv6Enabled = false,
+            ),
+        )
+        // Delayed SLAAC Router Advertisement adds IPv6 on the same Wi-Fi while VPN IPv6 is disabled.
+        assertFalse(
+            tracker.onPreferredRoute(
+                RouteFingerprint(netHandle = 300L, hasIpv4 = true, hasIpv6 = true),
+                vpnIpv6Enabled = false,
+            ),
+        )
+        // Subsequent SLAAC expiry on the same Wi-Fi also stays silent when VPN IPv6 is disabled.
+        assertFalse(
+            tracker.onPreferredRoute(
+                RouteFingerprint(netHandle = 300L, hasIpv4 = true, hasIpv6 = false),
+                vpnIpv6Enabled = false,
+            ),
+        )
+        // When VPN IPv6 IS enabled, IPv6 arrival on the same network does trigger reset.
+        assertTrue(
+            tracker.onPreferredRoute(
+                RouteFingerprint(netHandle = 300L, hasIpv4 = true, hasIpv6 = true),
+                vpnIpv6Enabled = true,
+            ),
+        )
+    }
 }

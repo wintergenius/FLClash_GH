@@ -1,11 +1,13 @@
 package core
 
 import (
+	"context"
 	"encoding/base64"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -141,4 +143,96 @@ func TestResetNetworkClosesDirectButPreservesWireGuardStreams(t *testing.T) {
 	}
 
 	_ = wgTracker.Close()
+}
+
+type fakePostRoamGroup struct {
+	constant.ProxyAdapter
+	movedFrom string
+	movedTo   string
+	changed   bool
+}
+
+func (g *fakePostRoamGroup) PostRoamCheck(_ context.Context, _ time.Duration, _ bool) (string, string, bool) {
+	return g.movedFrom, g.movedTo, g.changed
+}
+
+func TestRunPostRoamCheckClosesStuckConnectionsOnDeadMemberOnly(t *testing.T) {
+	direct := outbound.NewDirect()
+	deadWG := adapter.NewProxy(&fakeWireGuardRebindAdapter{ProxyAdapter: direct})
+	liveWG := adapter.NewProxy(outbound.NewRejectWithOption(outbound.RejectOption{Name: "WG-LV"}))
+	autoGroup := adapter.NewProxy(&fakePostRoamGroup{
+		ProxyAdapter: outbound.NewRejectWithOption(outbound.RejectOption{Name: "⚡ Авто"}),
+		movedFrom:    "WG-NL",
+		movedTo:      "WG-LV",
+		changed:      true,
+	})
+
+	tunnel.UpdateProxies(map[string]constant.Proxy{
+		"WG-NL":  deadWG,
+		"WG-LV":  liveWG,
+		"⚡ Авто": autoGroup,
+	}, nil)
+	t.Cleanup(func() { tunnel.UpdateProxies(nil, nil) })
+
+	deadLocal, deadRemote := net.Pipe()
+	t.Cleanup(func() { _ = deadRemote.Close() })
+	deadConn := outbound.NewConn(deadLocal, deadWG)
+	deadConn.AppendToChains(autoGroup)
+	deadTracker := statistic.NewTCPTracker(deadConn, statistic.DefaultManager, &constant.Metadata{}, nil, 0, 0, false)
+
+	liveLocal, liveRemote := net.Pipe()
+	t.Cleanup(func() {
+		_ = liveLocal.Close()
+		_ = liveRemote.Close()
+	})
+	liveConn := outbound.NewConn(liveLocal, liveWG)
+	liveConn.AppendToChains(autoGroup)
+	liveTracker := statistic.NewTCPTracker(liveConn, statistic.DefaultManager, &constant.Metadata{}, nil, 0, 0, false)
+	t.Cleanup(func() { _ = liveTracker.Close() })
+
+	runPostRoamCheck(context.Background(), 0, 50*time.Millisecond)
+
+	if statistic.DefaultManager.Get(deadTracker.ID()) != nil {
+		t.Fatal("expected tracker pinned to dead primary WG-NL to be closed after group failover")
+	}
+	if statistic.DefaultManager.Get(liveTracker.ID()) == nil {
+		t.Fatal("expected tracker on live backup WG-LV to remain open")
+	}
+}
+
+func TestCancelPostRoamCheckAbortsPendingSettleTimer(t *testing.T) {
+	direct := outbound.NewDirect()
+	deadWG := adapter.NewProxy(&fakeWireGuardRebindAdapter{ProxyAdapter: direct})
+	liveWG := adapter.NewProxy(outbound.NewRejectWithOption(outbound.RejectOption{Name: "WG-LV"}))
+	autoGroup := adapter.NewProxy(&fakePostRoamGroup{
+		ProxyAdapter: outbound.NewRejectWithOption(outbound.RejectOption{Name: "⚡ Авто"}),
+		movedFrom:    "WG-NL",
+		movedTo:      "WG-LV",
+		changed:      true,
+	})
+
+	tunnel.UpdateProxies(map[string]constant.Proxy{
+		"WG-NL":  deadWG,
+		"WG-LV":  liveWG,
+		"⚡ Авто": autoGroup,
+	}, nil)
+	t.Cleanup(func() { tunnel.UpdateProxies(nil, nil) })
+
+	local, remote := net.Pipe()
+	t.Cleanup(func() {
+		_ = local.Close()
+		_ = remote.Close()
+	})
+	conn := outbound.NewConn(local, deadWG)
+	conn.AppendToChains(autoGroup)
+	tracker := statistic.NewTCPTracker(conn, statistic.DefaultManager, &constant.Metadata{}, nil, 0, 0, false)
+	t.Cleanup(func() { _ = tracker.Close() })
+
+	schedulePostRoamCheck()
+	cancelPostRoamCheck()
+	time.Sleep(postRoamSettleDelay + 40*time.Millisecond)
+
+	if statistic.DefaultManager.Get(tracker.ID()) == nil {
+		t.Fatal("canceled post-roam check must not close connections after profile reload/stop")
+	}
 }

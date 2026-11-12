@@ -1,12 +1,31 @@
 package core
 
 import (
+	"context"
+	"slices"
+	"sync"
+	"time"
+
 	"github.com/metacubex/mihomo/component/iface"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
+)
+
+const (
+	postRoamSettleDelay = 150 * time.Millisecond
+	postRoamFastTimeout = 1500 * time.Millisecond
+)
+
+type postRoamCheckable interface {
+	PostRoamCheck(ctx context.Context, fastTimeout time.Duration, force bool) (movedFrom string, movedTo string, changed bool)
+}
+
+var (
+	postRoamMu     sync.Mutex
+	postRoamCancel context.CancelFunc
 )
 
 func handleGetTraffic(params TrafficParams) Traffic {
@@ -79,6 +98,117 @@ func handleNetworkChanged() {
 	handleClearDnsCache()
 	tunnel.ResetWireGuardBinds()
 	bumpRouteEpoch()
+	schedulePostRoamCheck()
+}
+
+func cancelPostRoamCheck() {
+	postRoamMu.Lock()
+	cancel := postRoamCancel
+	postRoamCancel = nil
+	postRoamMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func hasGroupActiveConnections(groupName string) bool {
+	found := false
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		if slices.Contains([]string(c.Chains()), groupName) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func closeMovedGroupConnections(groupName, movedFrom string) {
+	if groupName == "" || movedFrom == "" {
+		return
+	}
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		chains := c.Chains()
+		if chains.Last() == movedFrom && slices.Contains([]string(chains), groupName) {
+			_ = c.Close()
+		}
+		return true
+	})
+}
+
+func runPostRoamCheck(ctx context.Context, settleDelay, fastTimeout time.Duration) {
+	if settleDelay > 0 {
+		timer := time.NewTimer(settleDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	type groupTarget struct {
+		name  string
+		group postRoamCheckable
+		force bool
+	}
+	watched := isRouteWatched()
+	var targets []groupTarget
+	for name, proxy := range tunnel.AllProxies() {
+		if group, ok := adapterAs[postRoamCheckable](proxy); ok {
+			targets = append(targets, groupTarget{
+				name:  name,
+				group: group,
+				force: watched || hasGroupActiveConnections(name),
+			})
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	var (
+		wg       sync.WaitGroup
+		anyMoved sync.Mutex
+		moved    bool
+	)
+	for _, target := range targets {
+		t := target
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			movedFrom, _, changed := t.group.PostRoamCheck(ctx, fastTimeout, t.force)
+			if changed && ctx.Err() == nil {
+				closeMovedGroupConnections(t.name, movedFrom)
+				anyMoved.Lock()
+				moved = true
+				anyMoved.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if moved && ctx.Err() == nil {
+		bumpRouteEpoch()
+	}
+}
+
+func schedulePostRoamCheck() {
+	if !isRunning.Load() {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	postRoamMu.Lock()
+	prev := postRoamCancel
+	postRoamCancel = cancel
+	postRoamMu.Unlock()
+	if prev != nil {
+		prev()
+	}
+	go runPostRoamCheck(ctx, postRoamSettleDelay, postRoamFastTimeout)
 }
 
 // A direct or TCP-proxied connection that went out over a network the device

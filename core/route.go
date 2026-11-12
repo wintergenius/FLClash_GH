@@ -64,6 +64,12 @@ func routeStamp() (epoch, version uint64) {
 	return currentRoute.epoch, currentRoute.version
 }
 
+func isRouteWatched() bool {
+	currentRoute.mu.Lock()
+	defer currentRoute.mu.Unlock()
+	return currentRoute.watched
+}
+
 func readPicks() (map[string]string, map[string]uint32) {
 	picks := map[string]string{}
 	for name, proxy := range tunnel.AllProxies() {

@@ -56,6 +56,7 @@ func handleStartListener() {
 }
 
 func handleStopListener() {
+	cancelPostRoamCheck()
 	configMu.Lock()
 	defer configMu.Unlock()
 	setRunning(false)
@@ -90,6 +91,7 @@ func updateListeners(cfg *config.Config) {
 }
 
 func handleShutdown() {
+	cancelPostRoamCheck()
 	handleStopLog()
 	stopRouteWatch()
 
