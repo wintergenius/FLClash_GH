@@ -1,7 +1,12 @@
+export 'connection_stats.dart';
+export 'connections_table.dart';
+export 'current_outbound.dart';
 export 'intranet_ip.dart';
-export 'network_detection.dart';
-export 'network_speed.dart';
-export 'outbound_mode.dart';
-export 'quick_options.dart';
-export 'traffic_usage.dart';
 export 'memory_info.dart';
+export 'network_takeover.dart';
+export 'outbound_mode.dart';
+export 'profiles.dart';
+export 'proxy_groups.dart';
+export 'service_status.dart';
+export 'traffic.dart';
+export 'update_status.dart';

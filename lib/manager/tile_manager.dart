@@ -5,7 +5,7 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/plugins/tile.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class TileManager extends ConsumerStatefulWidget {
@@ -33,16 +33,6 @@ class _TileContainerState extends ConsumerState<TileManager> with TileListener {
     unawaited(ref.read(setupActionProvider.notifier).setRunning(true));
     unawaited(app?.tip(currentAppLocalizations.startVpn));
     super.onStart();
-  }
-
-  @override
-  Future<void> onStop() async {
-    if (!isStart) {
-      return;
-    }
-    unawaited(ref.read(setupActionProvider.notifier).setRunning(false));
-    unawaited(app?.tip(currentAppLocalizations.stopVpn));
-    super.onStop();
   }
 
   @override

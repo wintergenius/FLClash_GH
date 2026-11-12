@@ -1,52 +1,65 @@
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/views/dashboard/widgets/widgets.dart';
-import 'package:fl_clash/widgets/widgets.dart';
+import 'package:flutter/widgets.dart';
 
 extension DashboardWidgetView on DashboardWidget {
-  GridItem get widget => switch (this) {
-    DashboardWidget.networkSpeed => const GridItem(
-      crossAxisCellCount: 8,
-      child: NetworkSpeed(),
-    ),
-    DashboardWidget.outboundModeV2 => const GridItem(
-      crossAxisCellCount: 8,
-      child: OutboundModeV2(),
-    ),
-    DashboardWidget.outboundMode => const GridItem(
-      crossAxisCellCount: 4,
-      child: OutboundMode(),
-    ),
-    DashboardWidget.trafficUsage => const GridItem(
-      crossAxisCellCount: 4,
-      child: TrafficUsage(),
-    ),
-    DashboardWidget.networkDetection => const GridItem(
-      crossAxisCellCount: 4,
-      child: NetworkDetection(),
-    ),
-    DashboardWidget.tunButton => const GridItem(
-      crossAxisCellCount: 4,
-      child: TUNButton(),
-    ),
-    DashboardWidget.vpnButton => const GridItem(
-      crossAxisCellCount: 4,
-      child: VpnButton(),
-    ),
-    DashboardWidget.systemProxyButton => const GridItem(
-      crossAxisCellCount: 4,
-      child: SystemProxyButton(),
-    ),
-    DashboardWidget.intranetIp => const GridItem(
-      crossAxisCellCount: 4,
-      child: IntranetIP(),
-    ),
-    DashboardWidget.memoryInfo => const GridItem(
-      crossAxisCellCount: 4,
-      child: MemoryInfo(),
-    ),
+  Widget get card => switch (this) {
+    DashboardWidget.currentOutbound => const CurrentOutboundCard(),
+    DashboardWidget.networkSpeed => const NetworkSpeedCard(),
+    DashboardWidget.outboundMode => const OutboundModeCard(),
+    DashboardWidget.vpnButton => const VpnCard(),
+    DashboardWidget.networkTakeover => const NetworkTakeoverCard(),
+    DashboardWidget.serviceStatus => const ServiceStatusCard(),
+    DashboardWidget.profiles => const ProfilesCard(),
+    DashboardWidget.proxyGroups => const ProxyGroupsCard(),
+    DashboardWidget.connectionStats => const ConnectionStatsCard(),
+    DashboardWidget.intranetIp => const IntranetIpCard(),
+    DashboardWidget.memoryInfo => const MemoryInfo(),
   };
-}
 
-DashboardWidget dashboardWidgetOf(GridItem gridItem) {
-  return DashboardWidget.values.firstWhere((item) => item.widget == gridItem);
+  Glyph get glyph => switch (this) {
+    DashboardWidget.currentOutbound => AppGlyphs.status,
+    DashboardWidget.networkSpeed => AppGlyphs.speed,
+    DashboardWidget.outboundMode => AppGlyphs.split,
+    DashboardWidget.vpnButton => AppGlyphs.vpn,
+    DashboardWidget.networkTakeover => AppGlyphs.shuffle,
+    DashboardWidget.serviceStatus => AppGlyphs.verified,
+    DashboardWidget.profiles => AppGlyphs.profiles,
+    DashboardWidget.proxyGroups => AppGlyphs.layers,
+    DashboardWidget.connectionStats => AppGlyphs.connections,
+    DashboardWidget.intranetIp => AppGlyphs.devices,
+    DashboardWidget.memoryInfo => AppGlyphs.memory,
+  };
+
+  String label(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    return switch (this) {
+      DashboardWidget.currentOutbound => appLocalizations.status,
+      DashboardWidget.networkSpeed => appLocalizations.networkSpeed,
+      DashboardWidget.outboundMode => appLocalizations.outboundMode,
+      DashboardWidget.vpnButton => 'VPN',
+      DashboardWidget.networkTakeover => appLocalizations.networkTakeover,
+      DashboardWidget.serviceStatus => appLocalizations.serviceStatus,
+      DashboardWidget.profiles => appLocalizations.profile,
+      DashboardWidget.proxyGroups => appLocalizations.proxyGroup,
+      DashboardWidget.connectionStats => appLocalizations.connectionStats,
+      DashboardWidget.intranetIp => appLocalizations.intranetIP,
+      DashboardWidget.memoryInfo => appLocalizations.memoryInfo,
+    };
+  }
+
+  String? description(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    return switch (this) {
+      DashboardWidget.currentOutbound => appLocalizations.currentOutboundDesc,
+      DashboardWidget.connectionStats => appLocalizations.connectionStatsDesc,
+      DashboardWidget.memoryInfo => appLocalizations.memoryInfoDesc,
+      _ => null,
+    };
+  }
+
+  /// It holds the start button, which has nowhere else to go.
+  bool get removable => this != DashboardWidget.currentOutbound;
 }

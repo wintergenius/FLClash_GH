@@ -4,11 +4,12 @@ import 'package:fl_clash/manager/tile_manager.dart';
 import 'package:fl_clash/plugins/tile.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../helpers/test_profiles.dart';
+import '../helpers/test_app.dart';
 
 class _RecordingSetupAction extends SetupAction {
   static final requests = <bool>[];
@@ -46,7 +47,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: TileManager(child: SizedBox.shrink())),
+        child: const HostApp(home: TileManager(child: SizedBox.shrink())),
       ),
     );
     await tester.pump();
@@ -98,27 +99,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_RecordingSetupAction.requests, [true]);
-  });
-
-  testWidgets('a tile stop request stops a running core', (tester) async {
-    final listener = await pumpTileManager(tester);
-    markStarted();
-    await tester.pump();
-
-    listener.onStop();
-    await tester.pumpAndSettle();
-
-    expect(_RecordingSetupAction.requests, [false]);
-  });
-
-  testWidgets('a tile stop request is ignored when nothing is running', (
-    tester,
-  ) async {
-    final listener = await pumpTileManager(tester);
-
-    listener.onStop();
-    await tester.pumpAndSettle();
-
-    expect(_RecordingSetupAction.requests, isEmpty);
   });
 }

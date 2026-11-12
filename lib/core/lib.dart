@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'desktop/model.dart';
 import 'interface.dart';
 import 'method.dart';
+import 'spill.dart';
 
 class CoreLib extends CoreHandlerInterface {
   static CoreLib? _instance;
@@ -52,6 +53,7 @@ class CoreLib extends CoreHandlerInterface {
     if (initializationError.isNotEmpty) {
       throw StateError(initializationError);
     }
+    await globalState.container.read(vpnOptionsProvider.future);
     _connectedCompleter.complete(true);
     final syncError =
         await _service?.syncState(
@@ -110,53 +112,71 @@ class CoreLib extends CoreHandlerInterface {
     return _stop(allowClosed: true);
   }
 
+  // The service opens and closes the Core's listeners itself and reports a run
+  // that ends, so once it takes the command the Core's own answer is moot.
   @override
-  Future<bool> startListener() async {
-    final listenerStarted = await super.startListener();
-    final serviceStarted = await _service?.start() ?? false;
-    return listenerStarted && serviceStarted;
+  Future<void> startListener() async {
+    await _ignoreUnanswered(super.startListener);
+    if (!await _service!.start()) {
+      throw const CoreMethodException(
+        code: 'service_refused',
+        message: 'The Android service did not start',
+      );
+    }
   }
 
   @override
-  Future<bool> stopListener() async {
-    final serviceStopped = await _service?.stop() ?? false;
-    final listenerStopped = await super.stopListener();
-    return serviceStopped && listenerStopped;
+  Future<void> stopListener() async {
+    final serviceStopped = await _service!.stop();
+    await _ignoreUnanswered(super.stopListener);
+    if (!serviceStopped) {
+      throw const CoreMethodException(
+        code: 'service_refused',
+        message: 'The Android service did not stop',
+      );
+    }
+  }
+
+  Future<void> _ignoreUnanswered(Future<void> Function() command) async {
+    try {
+      await command();
+    } catch (error) {
+      if (!isUnansweredCoreError(error)) {
+        rethrow;
+      }
+    }
   }
 
   @override
-  Future<T?> invokeMethod<T>({
+  Future<Object?> invokeMethod({
     required CoreMethod method,
     Object? arguments,
     Duration? timeout,
   }) {
-    return _invokeMethod<T>(
-      method: method,
-      arguments: arguments,
-    ).withTimeout(timeout: timeout, onTimeout: () => null);
+    final call = _send(method: method, arguments: arguments);
+    return call.withTimeout(
+      timeout: timeout,
+      onTimeout: () {
+        unawaited(call.then(discardSpilledFile, onError: (_) {}));
+        throw TimeoutException('Core method ${method.wireName} timed out');
+      },
+    );
   }
 
-  Future<T?> _invokeMethod<T>({
-    required CoreMethod method,
-    Object? arguments,
-  }) async {
+  Future<Object?> _send({required CoreMethod method, Object? arguments}) async {
     try {
       await _connectedCompleter.future.timeout(coreConnectionWaitDuration);
-    } catch (error) {
-      commonPrint.log(
-        'Invoke method ${method.name} before connection timed out: $error',
-        logLevel: coreFailureLogLevel(error),
+    } on TimeoutException {
+      throw CoreMethodException(
+        code: 'core_unavailable',
+        message: 'Core is not connected for ${method.wireName}',
       );
-      return null;
     }
     final id = '${++_methodCallId}';
-    final response = await _service?.invokeMethod(
+    final response = await _service!.invokeMethod(
       CoreMethodCall(id: id, method: method, arguments: arguments),
     );
-    if (response == null) {
-      return null;
-    }
-    return response.unwrap<T>();
+    return response.unwrap<Object?>();
   }
 }
 

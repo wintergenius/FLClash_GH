@@ -7,7 +7,7 @@ import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/plugins/service.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class AndroidManager extends ConsumerStatefulWidget {
@@ -31,7 +31,7 @@ class _AndroidContainerState extends ConsumerState<AndroidManager>
       app?.updateExcludeFromRecents(next);
     }, fireImmediately: true);
     ref.listenManual(loadedLocaleProvider, (prev, next) {
-      if (prev != null && prev != next) {
+      if (prev != null && prev != next && !safeModeBuild) {
         app?.initShortcuts();
       }
     });
@@ -47,17 +47,35 @@ class _AndroidContainerState extends ConsumerState<AndroidManager>
     });
     service?.addListener(this);
     app?.onPackagesChanged = _reloadPackages;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(
+          ref
+              .read(systemActionProvider.notifier)
+              .syncAutoRejectedRussianPackages(),
+        );
+      }
+    });
   }
 
+  /// A reload reads every installed app's label, and a round of store updates
+  /// reports each app on its own.
   void _reloadPackages() {
-    if (ref.read(packagesProvider).isEmpty) {
-      return;
-    }
-    unawaited(ref.read(systemActionProvider.notifier).getPackages());
+    debouncer.call(FunctionTag.reloadPackages, () async {
+      if (!mounted) {
+        return;
+      }
+      final action = ref.read(systemActionProvider.notifier);
+      await action.syncAutoRejectedRussianPackages();
+      if (mounted && ref.read(packagesProvider).isNotEmpty) {
+        await action.getPackages();
+      }
+    }, duration: const Duration(seconds: 2));
   }
 
   @override
   void dispose() {
+    debouncer.cancel(FunctionTag.reloadPackages);
     if (app?.onPackagesChanged == _reloadPackages) {
       app?.onPackagesChanged = null;
     }
@@ -69,6 +87,12 @@ class _AndroidContainerState extends ConsumerState<AndroidManager>
   void onServiceEvent(CoreEvent event) {
     coreEventManager.sendEvent(event);
     super.onServiceEvent(event);
+  }
+
+  @override
+  void onServiceStopped() {
+    unawaited(ref.read(setupActionProvider.notifier).setRunning(false));
+    super.onServiceStopped();
   }
 
   @override

@@ -3,15 +3,18 @@ import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/manager/window_manager.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/ui/ui.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
 
+import '../helpers/glyph_finders.dart';
 import '../helpers/test_app.dart';
 
-const _windowChannel = MethodChannel('window_manager');
+const _windowChannel = MethodChannel('window');
 
 const _contentKey = Key('window-header-test-content');
 
@@ -32,7 +35,7 @@ Finder _glyph(CaptionGlyph glyph) => find.byWidgetPredicate(
 Finder _captionButton(Finder icon) =>
     find.ancestor(of: icon, matching: find.byType(IconButton));
 
-Finder get _pinIcon => find.byIcon(Icons.push_pin_outlined);
+Finder get _pinIcon => find.byGlyph(AppGlyphs.pin);
 
 List<Finder> get _captionIcons => [
   _glyph(CaptionGlyph.minimize),
@@ -274,7 +277,7 @@ void main() {
       );
     });
 
-    testWidgets('the pin keeps the round Material button in a square slot', (
+    testWidgets('the pin keeps a round button in a square slot', (
       tester,
     ) async {
       await pumpBar(tester, width: 900);
@@ -288,9 +291,9 @@ void main() {
       expect(tester.getSize(_pinIcon), const Size.square(pinIconSize));
       expect(tester.getCenter(_pinIcon), tester.getCenter(pin));
       expect(
-        tester.widget<IconButton>(pin).style?.shape?.resolve({}),
-        const CircleBorder(),
-        reason: 'the pin keeps the round ripple of a regular icon button',
+        tester.widget<IconButton>(pin).style?.shape,
+        AppShape.circle,
+        reason: 'the pin keeps the round shape of a regular icon button',
       );
       expect(
         tester.getRect(pin).right,
@@ -329,7 +332,7 @@ void main() {
       );
     });
 
-    testWidgets('caption buttons are flat rectangles that keep the ripple', (
+    testWidgets('caption buttons are flat rectangles shaded under a pointer', (
       tester,
     ) async {
       await pumpBar(tester, width: 900);
@@ -338,13 +341,16 @@ void main() {
       expect(size.width, greaterThan(size.height));
 
       final context = tester.element(_glyph(CaptionGlyph.close));
-      final themeStyle = IconButtonTheme.of(context).style!;
-      final onSurface = Theme.of(context).colorScheme.onSurface;
-      expect(themeStyle.shape?.resolve({}), AppShape.none);
-      expect(themeStyle.minimumSize?.resolve({}), size);
-      expect(themeStyle.splashFactory, isNull);
-      expect(themeStyle.animationDuration, isNull);
-      expect(themeStyle.overlayColor, isNull);
+      final themeStyle = ButtonTheme.of(context).icon!;
+      final colorScheme = Theme.of(context).colorScheme;
+      final onSurface = colorScheme.onSurface;
+      expect(themeStyle.shape, AppShape.none);
+      expect(themeStyle.minimumSize, size);
+      expect(themeStyle.pressLook, PressLook.none);
+      expect(
+        themeStyle.overlayColor?.resolve({WidgetState.hovered}),
+        colorScheme.onSurfaceVariant.withValues(alpha: 0.08),
+      );
       expect(themeStyle.foregroundColor?.resolve({}), onSurface);
       expect(
         themeStyle.foregroundColor?.resolve({WidgetState.pressed}),
@@ -381,8 +387,7 @@ void main() {
       expect(
         style.overlayColor?.resolve({WidgetState.pressed}),
         colorScheme.onError.opacity12,
-        reason:
-            'the ripple on the error colored close button must stay visible',
+        reason: 'the press on the error colored close button must stay visible',
       );
 
       for (final icon in [
@@ -413,15 +418,13 @@ void main() {
       final context = tester.element(_glyph(CaptionGlyph.close));
       final colorScheme = Theme.of(context).colorScheme;
       expect(IconTheme.of(context).color, colorScheme.onError);
-      final material = tester.widget<Material>(
-        find
-            .descendant(
-              of: _captionButton(_glyph(CaptionGlyph.close)),
-              matching: find.byType(Material),
-            )
-            .first,
+      final surface = tester.widget<CardSurface>(
+        find.descendant(
+          of: _captionButton(_glyph(CaptionGlyph.close)),
+          matching: find.byType(CardSurface),
+        ),
       );
-      expect(material.color, colorScheme.error);
+      expect(surface.fill, colorScheme.error);
     });
 
     testWidgets('the bar keeps its height in a narrow window', (tester) async {
@@ -506,12 +509,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
 
       await tester.pumpWidget(
-        MaterialApp(
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            ...GlobalMaterialLocalizations.delegates,
-          ],
-          supportedLocales: AppLocalizations.delegate.supportedLocales,
+        HostApp(
           builder: (_, child) => WindowHeaderLayout(
             height: _windowsHeaderHeight,
             header: WindowHeaderBar(
@@ -763,19 +761,17 @@ void main() {
       );
     });
 
-    testWidgets('the overlay offset reserves exactly what the header takes', (
+    testWidgets('the overlay offset clears the header and the app bar', (
       tester,
     ) async {
       for (final viewSize in [const Size(420, 800), const Size(1200, 800)]) {
         await pumpContainer(tester, version: 15, viewSize: viewSize);
 
-        final shows = _hostShowsHeader(
-          version: 15,
-          isMobileView: viewSize.width <= maxMobileWidth,
-        );
+        final isMobileView = viewSize.width <= maxMobileWidth;
+        final shows = _hostShowsHeader(version: 15, isMobileView: isMobileView);
         expect(
           container.read(overlayTopOffsetProvider),
-          kToolbarHeight + (shows ? kHeaderHeight : 0),
+          (shows ? kHeaderHeight : 0) + bannerBarClearance,
           reason: 'view size $viewSize',
         );
       }

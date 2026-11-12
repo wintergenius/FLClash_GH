@@ -5,7 +5,7 @@ import 'package:test/test.dart';
 
 const _platformPackages = [
   'tray',
-  'window_manager',
+  'window',
   'launch_at_startup',
   'screen_retriever',
 ];
@@ -15,7 +15,6 @@ const _platformModules = [
   'lib/common/window.dart',
   'lib/common/launch.dart',
   'lib/common/system_dns.dart',
-  'lib/common/permission.dart',
 ];
 
 final _platformImport = RegExp(

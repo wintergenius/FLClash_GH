@@ -27,6 +27,7 @@ migrate_working_dir/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
+/.widget_preview/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
@@ -57,6 +58,7 @@ docs/
 /android/**/build
 /android/common/**/.**/
 /android/common/local.*
+# Left in place by builds from before the gomobile Core.
 /android/core/**/includes/
 /android/core/**/cmake-build-*/
 /android/core/**/jniLibs/

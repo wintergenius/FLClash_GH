@@ -1,22 +1,26 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/config.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:screen_retriever/screen_retriever.dart';
-import 'package:window_manager/window_manager.dart';
+import 'package:window/window.dart';
 
 class Window implements WindowPort {
+  static const _tintOpacity = 0.5;
   static Window? _instance;
   bool _supportsPosition = false;
+  WindowEffect? _blurEffect;
   late final WindowVisibilityController _visibility =
       WindowVisibilityController(
         showWindow: _showWindow,
         hideWindow: _hideWindow,
         isWindowVisible: _isWindowVisible,
-        setSkipTaskbar: (skip) => windowManager.setSkipTaskbar(skip),
+        setSkipTaskbar: (skip) => desktopWindow.setSkipTaskbar(skip),
         dockSettleDuration: system.isMacOS
             ? const Duration(seconds: 1)
             : Duration.zero,
@@ -30,90 +34,72 @@ class Window implements WindowPort {
   }
 
   Future<void> init(int version, WindowProps props) async {
-    final acquire = await singleInstanceLock.acquire();
-    if (!acquire) {
-      commonPrint.log('another instance owns the data directory, exiting');
-      exit(0);
-    }
-    if (system.isWindows) {
-      for (final scheme in protocolSchemes) {
-        protocol.register(scheme);
+    if (!safeModeBuild) {
+      if (system.isWindows) {
+        for (final scheme in protocolSchemes) {
+          protocol.register(scheme);
+        }
+      }
+      if (system.isLinux) {
+        unawaited(protocol.registerLinux(protocolSchemes));
       }
     }
-    if (system.isLinux) {
-      unawaited(protocol.registerLinux(protocolSchemes));
-    }
-    await windowManager.ensureInitialized();
+    await desktopWindow.ensureInitialized();
     _supportsPosition = !system.isMacOS;
     if (system.isLinux) {
-      _supportsPosition = await windowManager.isPositionSupported();
+      _supportsPosition = await desktopWindow.isPositionSupported();
     }
-    final WindowOptions windowOptions = WindowOptions(
-      size: props.size,
-      minimumSize: const Size(380, 400),
-    );
     if (!system.isMacOS || version > 10) {
-      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+      await desktopWindow.setTitleBarStyle(TitleBarStyle.hidden);
     }
-    await windowManager.setMaximizable(true);
-    // On Linux the compositor only honors positioning after the window is shown;
-    // elsewhere position it pre-show to avoid a visible jump.
-    if (!system.isLinux) {
-      await _windowPosition(props);
+    await desktopWindow.setSize(props.savedSize ?? await _defaultSize());
+    await desktopWindow.setMinimumSize(const Size(380, 400));
+    await _windowPosition(props);
+    await desktopWindow.setPreventClose(true);
+  }
+
+  Future<Size> _defaultSize() async {
+    try {
+      final display = await screenRetriever.getPrimaryDisplay();
+      return fittedWindowSize(display.visibleSize ?? display.size);
+    } catch (_) {
+      return defaultWindowSize;
     }
-    await windowManager.waitUntilReadyToShow(windowOptions);
-    if (system.isLinux) {
-      await _windowPosition(props);
-    }
-    await windowManager.setPreventClose(true);
   }
 
   Future<void> _windowPosition(WindowProps props) async {
-    if (_supportsPosition) {
-      final left = props.left;
-      final top = props.top;
-      if (left == null || top == null) {
-        await windowManager.setAlignment(Alignment.center);
-      } else {
-        final size = props.size;
-        final right = left + size.width;
-        final bottom = top + size.height;
-        final displays = await screenRetriever.getAllDisplays();
-        final isPositionValid = displays.any((display) {
-          final visiblePosition = display.visiblePosition;
-          if (visiblePosition == null) {
-            return false;
-          }
-          final displayBounds = Rect.fromLTWH(
-            visiblePosition.dx,
-            visiblePosition.dy,
-            display.size.width,
-            display.size.height,
+    if (!_supportsPosition) {
+      return;
+    }
+    final position = props.left == null || props.top == null
+        ? null
+        : restoredWindowPosition(
+            props,
+            displays: await screenRetriever.getAllDisplays(),
+            currentScale: system.isWindows ? _windowScale : null,
           );
-          return displayBounds.contains(Offset(left, top)) ||
-              displayBounds.contains(Offset(right, bottom));
-        });
-        if (isPositionValid) {
-          await windowManager.setPosition(Offset(left, top));
-        } else {
-          await windowManager.setAlignment(Alignment.center);
-        }
-      }
+    if (position == null) {
+      await desktopWindow.setAlignment(Alignment.center);
+    } else {
+      await desktopWindow.setPosition(position);
     }
   }
+
+  double get _windowScale =>
+      PlatformDispatcher.instance.implicitView?.devicePixelRatio ?? 1;
 
   @override
   Future<WindowProps?> captureNormalGeometry(WindowProps current) async {
     final states = await Future.wait<bool>([
-      windowManager.isMaximized(),
-      windowManager.isFullScreen(),
-      windowManager.isMinimized(),
+      desktopWindow.isMaximized(),
+      desktopWindow.isFullScreen(),
+      desktopWindow.isMinimized(),
     ]);
     if (states.any((state) => state)) {
       return null;
     }
 
-    final bounds = await windowManager.getBounds();
+    final bounds = await desktopWindow.getBounds();
     if (!bounds.width.isFinite ||
         !bounds.height.isFinite ||
         bounds.width <= 0 ||
@@ -127,22 +113,69 @@ class Window implements WindowPort {
       height: bounds.height,
       left: hasValidPosition ? bounds.left : current.left,
       top: hasValidPosition ? bounds.top : current.top,
+      scale: hasValidPosition && system.isWindows
+          ? _windowScale
+          : current.scale,
     );
+  }
+
+  /// A probe that finds no effect is not cached, so a failure at startup
+  /// does not pin the toggle to off for the rest of the session.
+  Future<WindowEffect> _resolveBlurEffect() async {
+    final cached = _blurEffect;
+    if (cached != null) {
+      return cached;
+    }
+    // Windows 10's acrylic accent makes the window trail the pointer while it
+    // is dragged, so Windows 10 takes the plain accent blur.
+    final candidates = system.isMacOS
+        ? const [WindowEffect.glass, WindowEffect.blur]
+        : const [WindowEffect.mica, WindowEffect.blur];
+    for (final effect in candidates) {
+      if (await desktopWindow.isEffectSupported(effect)) {
+        return _blurEffect = effect;
+      }
+    }
+    return WindowEffect.none;
+  }
+
+  /// Only Windows 10's accent blur takes the tint natively; it draws nothing
+  /// without one. Every material still keeps the sidebar's own color half over
+  /// it, or the rail takes the hue of whatever lies behind the window while
+  /// the content beside it keeps the theme's.
+  @override
+  Future<double?> setBlur({
+    required bool enabled,
+    required Brightness brightness,
+    required Color tint,
+  }) async {
+    if (system.isLinux) {
+      return null;
+    }
+    final effect = enabled ? await _resolveBlurEffect() : WindowEffect.none;
+    await desktopWindow.setEffect(
+      effect,
+      tint: system.isWindows ? tint.withValues(alpha: _tintOpacity) : null,
+      brightness: brightness,
+    );
+    return effect == WindowEffect.none ? null : _tintOpacity;
   }
 
   /// Every desktop runner leaves the window hidden until [init] reveals it, so
   /// a failure before that point would leave the error screen with no window.
-  Future<void> showInitFailure() async {
+  Future<void> showInitFailure({required AsyncCallback onExit}) async {
+    desktopWindow.addListener(_InitFailureWindowListener(onExit));
     try {
-      await windowManager.ensureInitialized();
-      if (await windowManager.isVisible()) {
+      await desktopWindow.ensureInitialized();
+      await desktopWindow.setPreventClose(true);
+      await desktopWindow.setTitleBarStyle(TitleBarStyle.normal);
+      if (await desktopWindow.isVisible()) {
         return;
       }
-      await windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(680, 580), center: true),
-      );
-      await windowManager.show();
-      await windowManager.focus();
+      await desktopWindow.setSize(const Size(680, 580));
+      await desktopWindow.center();
+      await desktopWindow.show();
+      await desktopWindow.focus();
     } catch (e) {
       commonPrint.log(
         'show init failure window failed ${e.toString()}',
@@ -161,31 +194,78 @@ class Window implements WindowPort {
   Future<void> toggle() => _visibility.toggle();
 
   Future<void> _showWindow() async {
-    render?.resume();
-    await windowManager.show();
-    await windowManager.focus();
+    await desktopWindow.show();
+    await desktopWindow.focus();
   }
 
   Future<void> _hideWindow() async {
-    render?.pause();
-    await windowManager.hide();
+    await desktopWindow.hide();
   }
 
   Future<bool> _isWindowVisible() async {
-    final value = await windowManager.isVisible();
-    commonPrint.log('window visible check: $value');
-    return value;
+    return desktopWindow.isVisible();
   }
 
   @override
   Future<void> close() async {
-    await windowManager.close();
+    await desktopWindow.close();
   }
 
   @override
   void forceExit() {
     exit(0);
   }
+}
+
+/// Keeps a margin of the work area around a first window on a small screen.
+@visibleForTesting
+Size fittedWindowSize(Size visible) => Size(
+  math.min(defaultWindowSize.width, visible.width * 0.9),
+  math.min(defaultWindowSize.height, visible.height * 0.9),
+);
+
+/// On Windows the plugin scales by the window's monitor and screen_retriever by
+/// each display's own, so only physical pixels compare across mixed scales.
+@visibleForTesting
+Offset? restoredWindowPosition(
+  WindowProps props, {
+  required List<Display> displays,
+  double? currentScale,
+}) {
+  final savedScale = currentScale == null ? 1.0 : props.scale ?? currentScale;
+  final topLeft = Offset(props.left!, props.top!) * savedScale;
+  final bottomRight =
+      topLeft + props.size.bottomRight(Offset.zero) * savedScale;
+  final isVisible = displays.any((display) {
+    final position = display.visiblePosition;
+    if (position == null) {
+      return false;
+    }
+    final scale = currentScale == null
+        ? 1.0
+        : display.scaleFactor?.toDouble() ?? 1.0;
+    final bounds = position & display.size;
+    final physical = Rect.fromLTRB(
+      bounds.left * scale,
+      bounds.top * scale,
+      bounds.right * scale,
+      bounds.bottom * scale,
+    );
+    return physical.contains(topLeft) || physical.contains(bottomRight);
+  });
+  return isVisible ? topLeft / (currentScale ?? 1.0) : null;
+}
+
+class _InitFailureWindowListener with WindowListener {
+  final AsyncCallback onExit;
+
+  _InitFailureWindowListener(this.onExit);
+
+  @override
+  void onWindowClose() => unawaited(onExit());
+
+  @override
+  void onWindowShouldTerminate() => unawaited(onExit());
 }
 
 /// Serializes visibility requests so a burst of hotkey toggles lands in

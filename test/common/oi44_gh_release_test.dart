@@ -4,10 +4,12 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:fl_clash/widgets/subscription_info_view.dart';
+import 'package:fl_clash/widgets/widgets.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:yaml/yaml.dart';
 
+import '../helpers/host_scaffold.dart';
 import '../helpers/test_app.dart';
 
 void main() {
@@ -101,7 +103,7 @@ void main() {
         'upload=0; download=0; total=0; expire=1794430800',
       );
       final trailing = SubscriptionInfo.formHString(
-        'upload=12; download=34; total=0; expire=1794430800; ; malformed',
+        'upload=12; download=34; total=0; expire=1794430800; ; malformed; =99',
       );
       expect(clean.total, 0);
       expect(clean.expire, 1794430800);
@@ -148,8 +150,9 @@ void main() {
           expire: 1794430800,
         );
         await tester.pumpWidget(
-          const TestApp(
-            child: Scaffold(
+          HostApp(
+            builder: (context, child) => wrapAppScopes(context, child!),
+            home: const HostScaffold(
               body: Column(
                 children: [
                   SubscriptionInfoView(subscriptionInfo: info),
@@ -168,37 +171,101 @@ void main() {
     );
   });
 
-  group('OI-44 Windows & Android out-of-the-box invariants', () {
-    test('DNS fallback, Windows TUN gvisor, and Android dnsHijacking defaults', () {
-      expect(defaultSystemDnsFallback, '77.88.8.8');
-      expect(defaultTun.stack, TunStack.gvisor);
-      expect(defaultWindowsTun.enable, isTrue);
-      expect(defaultWindowsTun.autoRoute, isTrue);
-      expect(defaultWindowsTun.stack, TunStack.gvisor);
-      expect(defaultVpnProps.dnsHijacking, isTrue);
+  group('OI-44 & v1.0.5 Windows/Android out-of-the-box invariants', () {
+    test(
+      'DNS fallback, Windows TUN gvisor, Android VpnProps (F2), and clean bypass domains',
+      () {
+        expect(defaultSystemDnsFallback, '77.88.8.8');
+        expect(defaultTunMtu, 1360);
+        expect(defaultTun.stack, TunStack.gvisor);
+        expect(defaultTun.mtu, 1360);
+        expect(defaultWindowsTun.enable, isTrue);
+        expect(defaultWindowsTun.coreJson['auto-route'], isTrue);
+        expect(defaultWindowsTun.stack, TunStack.gvisor);
 
-      final freshConfig = Config.realFromJson(null);
-      expect(freshConfig.vpnProps.dnsHijacking, isTrue);
-      expect(
-        freshConfig.patchClashConfig.tun.enable,
-        system.isWindows,
-      );
-      expect(freshConfig.patchClashConfig.tun.stack, TunStack.gvisor);
-    });
+        // F2 invariants: Android VPN HTTP proxy off by default, DNS hijack on,
+        // allowBypass on, desktop NetworkProps.systemProxy untouched.
+        expect(defaultVpnProps.systemProxy, isFalse);
+        expect(defaultVpnProps.dnsHijacking, isTrue);
+        expect(defaultVpnProps.allowBypass, isTrue);
+        expect(defaultNetworkProps.systemProxy, isTrue);
+        for (final legacyDomain in const [
+          '*zhihu.com',
+          '*zhimg.com',
+          '*jd.com',
+          '100ime-iat-api.xfyun.cn',
+          '*360buyimg.com',
+        ]) {
+          expect(defaultBypassDomain, isNot(contains(legacyDomain)));
+        }
 
-    test('Inno Setup registers flclash:// URL protocol and Android MTU is 1360', () {
-      final iss = File('windows/packaging/exe/inno_setup.iss').readAsStringSync();
-      expect(iss, contains('[Registry]'));
-      expect(iss, contains(r'Subkey: "Software\\Classes\\flclash"'));
-      expect(iss, contains('ValueName: "URL Protocol"'));
+        final freshConfig = Config.realFromJson(null);
+        expect(freshConfig.vpnProps.systemProxy, isFalse);
+        expect(freshConfig.vpnProps.dnsHijacking, isTrue);
+        expect(freshConfig.patchClashConfig.tun.enable, system.isWindows);
+        expect(freshConfig.patchClashConfig.tun.stack, TunStack.gvisor);
+        expect(freshConfig.patchClashConfig.tun.mtu, 1360);
+      },
+    );
 
-      final vpnKt = File(
-        'android/service/src/main/java/com/follow/clash/service/VpnService.kt',
-      ).readAsStringSync();
-      expect(vpnKt, contains('private const val MTU = 1360'));
+    test(
+      'makeRealProfileTask enables store-fake-ip by default (A5) and preserves explicit false',
+      () async {
+        final defaultBuilt = await makeRealProfileTask(
+          const MakeRealProfileState(
+            profilesPath: '/tmp/profiles',
+            profileId: 1,
+            rawConfig: <String, dynamic>{},
+            realPatchConfig: PatchClashConfig(),
+            appendSystemDns: false,
+            proxyGroups: [],
+            rules: [],
+            addedRules: [],
+            defaultUA: 'FlClashGH/v1.0.5',
+          ),
+        );
+        final defaultYaml = loadYaml(defaultBuilt.yaml) as YamlMap;
+        expect(defaultYaml['profile']['store-selected'], isFalse);
+        expect(defaultYaml['profile']['store-fake-ip'], isTrue);
 
-      final tunGo = File('core/tun/tun.go').readAsStringSync();
-      expect(tunGo, contains('MTU:                 1360,'));
-    });
+        final explicitFalseBuilt = await makeRealProfileTask(
+          const MakeRealProfileState(
+            profilesPath: '/tmp/profiles',
+            profileId: 2,
+            rawConfig: <String, dynamic>{
+              'profile': <String, dynamic>{'store-fake-ip': false},
+            },
+            realPatchConfig: PatchClashConfig(),
+            appendSystemDns: false,
+            proxyGroups: [],
+            rules: [],
+            addedRules: [],
+            defaultUA: 'FlClashGH/v1.0.5',
+          ),
+        );
+        final explicitFalseYaml = loadYaml(explicitFalseBuilt.yaml) as YamlMap;
+        expect(explicitFalseYaml['profile']['store-fake-ip'], isFalse);
+      },
+    );
+
+    test(
+      'Inno Setup registers flclash:// URL protocol and Android/Go MTU default is 1360',
+      () {
+        final iss = File(
+          'windows/packaging/exe/inno_setup.iss',
+        ).readAsStringSync();
+        expect(iss, contains('[Registry]'));
+        expect(iss, contains(r'Subkey: "Software\\Classes\\flclash"'));
+        expect(iss, contains('ValueName: "URL Protocol"'));
+
+        final vpnOptsKt = File(
+          'android/service/src/main/java/com/follow/clash/service/models/VpnOptions.kt',
+        ).readAsStringSync();
+        expect(vpnOptsKt, contains('const val DEFAULT_TUN_MTU = 1360'));
+
+        final tunGo = File('core/tun/tun.go').readAsStringSync();
+        expect(tunGo, contains('mtu = 1360'));
+      },
+    );
   });
 }

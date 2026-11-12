@@ -3,9 +3,10 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:material_ui/material_ui.dart';
 
 /// Per-application split for desktop: which executables use the tunnel.
 ///
@@ -61,7 +62,7 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
         return;
       }
       if (!authorized) {
-        dialogs.showNotifier(_strings.tunDeclined, level: MessageLevel.warning);
+        dialogs.showBanner(_strings.tunDeclined, level: BannerLevel.warning);
         return;
       }
       final currentPatch = ref.read(patchClashConfigProvider);
@@ -97,17 +98,6 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
 
   /// Applies the current lists by restarting the Core process, not by
   /// hot-reloading the config.
-  ///
-  /// A hot reload (`applyProfile`) builds a fresh set of outbounds and only
-  /// swaps the proxy map; the previous WireGuard outbound keeps its UDP socket
-  /// and timers alive until the garbage collector reaches it. Two or more
-  /// devices with the same key then take turns handshaking with the node and
-  /// steal the session from each other every few seconds (A31-BUG-4,
-  /// docs/canary/node-20.md CAN-47/CAN-50): the tunnel goes dark in 30-40 s
-  /// windows for every application behind the TUN. Restarting the Core kills
-  /// the process, so every socket is closed for certain; the restart worker
-  /// re-applies the profile with the new lists and brings the TUN back up.
-  /// Applications reconnect and land under the new rules.
   Future<void> _save() async {
     if (_saving) {
       return;
@@ -126,9 +116,9 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
         setState(() {
           _dirty = false;
         });
-        dialogs.showNotifier(_strings.applied, level: MessageLevel.success);
+        dialogs.showBanner(_strings.applied, level: BannerLevel.success);
       } else {
-        dialogs.showNotifier(_strings.applyFailed, level: MessageLevel.error);
+        dialogs.showBanner(_strings.applyFailed, level: BannerLevel.error);
       }
     } finally {
       if (mounted) {
@@ -149,7 +139,10 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
       message: TextSpan(text: _strings.saveChangesPrompt),
       confirmText: _strings.save,
     );
-    if (res == true) {
+    if (res == null) {
+      return;
+    }
+    if (res) {
       await _save();
     }
     if (mounted) {
@@ -262,38 +255,38 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
     required bool tunEnabled,
   }) {
     final strings = _strings;
-    final (IconData icon, String text) = switch (props) {
-      _ when _dirty => (Icons.save_outlined, strings.unsaved),
+    final (Glyph glyph, String text) = switch (props) {
+      _ when _dirty => (AppGlyphs.edit, strings.unsaved),
       AccessControlProps(enable: false) => (
-        Icons.info_outline,
+        AppGlyphs.info,
         strings.disabledHint,
       ),
-      _ when !tunEnabled => (Icons.warning_amber_outlined, strings.tunOff),
+      _ when !tunEnabled => (AppGlyphs.warning, strings.tunOff),
       AccessControlProps(acceptList: final tunneled) when tunneled.isNotEmpty =>
         (
-          Icons.vpn_lock,
+          AppGlyphs.vpn,
           props.rejectList.isEmpty
               ? strings.effectiveAllow
               : '${strings.effectiveAllow} ${strings.nonTunneledIgnored}',
         ),
       AccessControlProps(rejectList: final excluded) when excluded.isNotEmpty =>
-        (Icons.vpn_lock, strings.effectiveDeny),
-      _ => (Icons.info_outline, strings.effectiveNone),
+        (AppGlyphs.vpn, strings.effectiveDeny),
+      _ => (AppGlyphs.info, strings.effectiveNone),
     };
     return ListItem(
-      leading: Icon(icon, color: context.colorScheme.primary),
-      title: Text(text, style: context.textTheme.bodyMedium),
+      leading: GlyphIcon(glyph, color: context.colorScheme.primary),
+      title: Text(text, style: AppTextStyle.body.of(context)),
     );
   }
 
-  IconData _entryIcon(String entry) {
+  Glyph _entryGlyph(String entry) {
     final isPath = entry.contains('\\') || entry.contains('/');
     if (!isPath) {
-      return Icons.apps;
+      return AppGlyphs.appsList;
     }
     return entry.toLowerCase().endsWith('.exe')
-        ? Icons.terminal
-        : Icons.folder_outlined;
+        ? AppGlyphs.logs
+        : AppGlyphs.resources;
   }
 
   Widget _buildSection({
@@ -306,53 +299,62 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ListHeader(title: title, subTitle: description),
-        if (entries.isEmpty)
-          ListItem(
-            title: Text(
-              strings.empty,
-              style: TextStyle(color: context.colorScheme.outline),
-            ),
-          ),
-        for (final entry in entries)
-          ListItem(
-            leading: Icon(_entryIcon(entry)),
-            title: Text(
-              entry,
-              maxLines: 1,
-              style: const TextStyle(overflow: TextOverflow.ellipsis),
-            ),
-            trailing: IconButton(
-              tooltip: strings.remove,
-              icon: const Icon(Icons.close),
-              onPressed: () => _remove(kind, entry),
-            ),
-          ),
+        generateSection(
+          title: title,
+          footer: description,
+          items: [
+            if (entries.isEmpty)
+              ListItem(
+                title: Text(
+                  strings.empty,
+                  style: TextStyle(color: context.colorScheme.outline),
+                ),
+              ),
+            for (final entry in entries)
+              ListItem(
+                leading: GlyphIcon(_entryGlyph(entry)),
+                title: Text(
+                  entry,
+                  maxLines: 1,
+                  style: const TextStyle(overflow: TextOverflow.ellipsis),
+                ),
+                trailing: IconButton(
+                  tooltip: strings.remove,
+                  icon: const GlyphIcon(AppGlyphs.close),
+                  onPressed: () => _remove(kind, entry),
+                ),
+              ),
+          ],
+        ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.only(top: 10),
           child: Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              FilledButton.tonalIcon(
+              TonalButton(
+                size: TonalButtonSize.section,
+                glyph: AppGlyphs.memory,
+                label: strings.addProcess,
                 onPressed: () => _pickProcess(kind),
-                icon: const Icon(Icons.memory),
-                label: Text(strings.addProcess),
               ),
-              FilledButton.tonalIcon(
+              TonalButton(
+                size: TonalButtonSize.section,
+                glyph: AppGlyphs.importFile,
+                label: strings.addExecutable,
                 onPressed: () => _pickExecutable(kind),
-                icon: const Icon(Icons.file_open_outlined),
-                label: Text(strings.addExecutable),
               ),
-              FilledButton.tonalIcon(
+              TonalButton(
+                size: TonalButtonSize.section,
+                glyph: AppGlyphs.resources,
+                label: strings.addFolder,
                 onPressed: () => _pickFolder(kind),
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: Text(strings.addFolder),
               ),
-              FilledButton.tonalIcon(
+              TonalButton(
+                size: TonalButtonSize.section,
+                glyph: AppGlyphs.keyboard,
+                label: strings.addName,
                 onPressed: () => _typeName(kind),
-                icon: const Icon(Icons.keyboard_outlined),
-                label: Text(strings.addName),
               ),
             ],
           ),
@@ -370,62 +372,58 @@ class _AccessDesktopViewState extends ConsumerState<AccessDesktopView> {
       patchClashConfigProvider.select((state) => state.tun.enable),
     );
     final strings = _strings;
-    return CommonScaffold(
-      title: strings.title,
-      actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: FilledButton.icon(
-            onPressed: _dirty && !_saving ? _save : null,
-            icon: _saving
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save_outlined),
-            label: Text(strings.save),
+    return PopGuard(
+      onPop: _dirty
+          ? (_) {
+              _handleBack();
+              return false;
+            }
+          : null,
+      child: Scaffold(
+        isLoading: _saving || _authorizing,
+        title: strings.title,
+        confirmationAction: _dirty && !_saving
+            ? IconButtonData(
+                glyph: AppGlyphs.check,
+                onPressed: _save,
+                tooltip: strings.save,
+              )
+            : null,
+        body: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
+            top: context.sectionsTopPadding,
+            bottom: 24 + context.bottomInset,
           ),
-        ),
-      ],
-      body: CommonPopScope(
-        onPop: (_) {
-          _handleBack();
-          return false;
-        },
-        child: ListView(
-        padding: const EdgeInsets.only(bottom: 24),
-        children: [
-          ListItem.toggle(
-            leading: const Icon(Icons.alt_route),
-            title: Text(strings.enable),
-            subtitle: Text(strings.enableDesc),
-            value: props.enable,
-            onChanged: _authorizing ? null : _handleEnable,
-          ),
-          _buildStatus(props: props, tunEnabled: tunEnabled),
-          _buildSection(
-            kind: _ListKind.tunneled,
-            title: strings.tunneled,
-            description: strings.tunneledDesc,
-            entries: props.acceptList,
-          ),
-          _buildSection(
-            kind: _ListKind.nonTunneled,
-            title: strings.nonTunneled,
-            description: strings.nonTunneledDesc,
-            entries: props.rejectList,
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              strings.entryHelp,
-              style: context.textTheme.bodySmall?.copyWith(
-                color: context.colorScheme.outline,
-              ),
+          children: [
+            generateSection(
+              items: [
+                ListItem.toggle(
+                  leading: const GlyphIcon(AppGlyphs.split),
+                  title: Text(strings.enable),
+                  subtitle: Text(strings.enableDesc),
+                  value: props.enable,
+                  onChanged: _authorizing ? null : _handleEnable,
+                ),
+                _buildStatus(props: props, tunEnabled: tunEnabled),
+              ],
             ),
-          ),
-        ],
+            _buildSection(
+              kind: _ListKind.tunneled,
+              title: strings.tunneled,
+              description: strings.tunneledDesc,
+              entries: props.acceptList,
+            ),
+            _buildSection(
+              kind: _ListKind.nonTunneled,
+              title: strings.nonTunneled,
+              description: strings.nonTunneledDesc,
+              entries: props.rejectList,
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: ListFooter(text: strings.entryHelp),
+            ),
+          ],
         ),
       ),
     );
@@ -455,9 +453,9 @@ class _ProcessPickerDialogState extends State<_ProcessPickerDialog> {
       return process.name.toLowerCase().contains(_query) ||
           (process.path?.toLowerCase().contains(_query) ?? false);
     }).toList();
-    return CommonDialog(
+    return AlertDialog(
       title: strings.addProcess,
-      overrideScroll: true,
+      hasFields: true,
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -465,14 +463,15 @@ class _ProcessPickerDialogState extends State<_ProcessPickerDialog> {
         ),
       ],
       child: SizedBox(
-        height: 420,
+        width: 340,
+        height: 400,
         child: Column(
           children: [
             TextField(
               autofocus: true,
               decoration: InputDecoration(
                 hintText: strings.search,
-                prefixIcon: const Icon(Icons.search),
+                prefixIcon: const GlyphIcon(AppGlyphs.search),
               ),
               onChanged: (value) {
                 setState(() {
@@ -484,13 +483,12 @@ class _ProcessPickerDialogState extends State<_ProcessPickerDialog> {
             Expanded(
               child: filtered.isEmpty
                   ? Center(child: Text(strings.empty))
-                  : ListView.builder(
+                  : PrismListView(
                       itemCount: filtered.length,
                       itemBuilder: (_, index) {
                         final process = filtered[index];
                         return ListItem(
-                          dense: true,
-                          padding: EdgeInsets.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
                           title: Text(process.name),
                           subtitle: Text(
                             process.path ?? strings.pathUnavailable,
@@ -542,8 +540,9 @@ class _TextInputDialogState extends State<_TextInputDialog> {
   @override
   Widget build(BuildContext context) {
     final strings = widget.strings;
-    return CommonDialog(
+    return AlertDialog(
       title: widget.title,
+      hasFields: true,
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),

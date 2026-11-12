@@ -1,218 +1,579 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show PathNotFoundException;
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/providers/app.dart';
+import 'package:fl_clash/features/editor/editor.dart';
+import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:re_editor/re_editor.dart';
+import 'package:code_forge/code_forge.dart'
+    show
+        CodeForge,
+        CodeForgeContextMenuRequest,
+        CodeForgeCompletionSource,
+        CodeForgeController,
+        CodeForgeDocument,
+        CodeForgeKeyboardShortcuts,
+        CodeSelectionStyle,
+        FindController,
+        UndoRedoController;
+import 'package:re_highlight/languages/ini.dart';
 import 'package:re_highlight/languages/javascript.dart';
 import 'package:re_highlight/languages/json.dart';
+import 'package:re_highlight/languages/plaintext.dart';
+import 'package:re_highlight/languages/xml.dart';
 import 'package:re_highlight/languages/yaml.dart';
+import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
+import 'package:rust_api/rust_api.dart' show isRustLibInitialized;
 
+export 'package:code_forge/code_forge.dart' show CodeForgeDocument;
+export 'package:fl_clash/features/editor/editor.dart'
+    show EditorSchema, readRelaxed;
+
+/// Whether `main` initialised `RustLib`, which a test that needs it missing
+/// cannot undo once another test in its isolate has.
+@visibleForTesting
+bool Function() editorNativeReady = () => isRustLibInitialized;
+
+/// Opens [path] off the UI isolate, or [ifMissing] when nothing is there.
+Future<CodeForgeDocument> openEditorFile(
+  String path, {
+  String ifMissing = '',
+}) async {
+  try {
+    return await CodeForgeDocument.openFile(path);
+  } on PathNotFoundException {
+    return CodeForgeDocument.fromText(ifMissing);
+  }
+}
+
+/// The edited text, read off the UI isolate when it is long.
+abstract interface class EditorContent {
+  @visibleForTesting
+  const factory EditorContent.text(String text) = _TextContent;
+
+  Future<String> readText();
+
+  Future<Uint8List> readBytes();
+}
+
+class _EditedContent implements EditorContent {
+  const _EditedContent(this._controller);
+
+  final CodeForgeController _controller;
+
+  @override
+  Future<String> readText() => _controller.readText();
+
+  @override
+  Future<Uint8List> readBytes() => _controller.readBytes();
+}
+
+class _TextContent implements EditorContent {
+  const _TextContent(this._text);
+
+  final String _text;
+
+  @override
+  Future<String> readText() async => _text;
+
+  @override
+  Future<Uint8List> readBytes() async => utf8.encode(_text);
+}
+
+/// [load] runs as the page mounts; open files in it with [openEditorFile].
 class EditorPage extends ConsumerStatefulWidget {
   final String title;
   final String? content;
-  final List<Language> languages;
-  final bool supportRemoteDownload;
+  final Future<CodeForgeDocument> Function()? load;
+  final Language language;
   final bool titleEditable;
-  final Function(BuildContext context, String title, String content)? onSave;
+
+  /// Applied to what opens as one edit, which leaves it to save and undo.
+  final String Function(String text)? edit;
+
+  /// A returned future is the save still running: until it completes the
+  /// page takes no second save and no pointer.
+  final FutureOr<void> Function(
+    BuildContext context,
+    String title,
+    EditorContent content,
+  )?
+  onSave;
+
+  /// Asked only when the text or the title has changed.
   final Future<bool> Function(
     BuildContext context,
     String title,
-    String content,
+    EditorContent content,
   )?
   onPop;
+  final bool? readOnly;
+  final EditorSchema schema;
 
   const EditorPage({
     super.key,
     required this.title,
-    required this.content,
+    this.content,
+    this.load,
     this.titleEditable = false,
+    this.edit,
     this.onSave,
     this.onPop,
-    this.supportRemoteDownload = false,
-    this.languages = const [Language.yaml],
-  });
+    this.readOnly,
+    this.language = Language.yaml,
+    this.schema = EditorSchema.config,
+  }) : assert(content == null || load == null);
 
   @override
   ConsumerState<EditorPage> createState() => _EditorPageState();
 }
 
-class _EditorPageState extends ConsumerState<EditorPage> {
-  late CodeLineEditingController _controller;
-  late CodeFindController _findController;
+class _EditorPageState extends ConsumerState<EditorPage>
+    with RouteSettledMixin<EditorPage> {
+  final _editorKey = GlobalKey<EditorViewState>();
+  late UndoRedoController _undoController;
   late TextEditingController _titleController;
-  late FocusNode _focusNode;
   late bool readOnly = false;
-  late final SelectionToolbarController _toolbarController;
+  CodeForgeDocument? _document;
+  CodeForgeDocument? _heldDocument;
+  var _openGeneration = 0;
+  bool _saving = false;
+  ({bool isDirty, bool canUndo, bool canRedo}) _barState = (
+    isDirty: false,
+    canUndo: false,
+    canRedo: false,
+  );
+
+  EditorViewState? get _editor => _editorKey.currentState;
+
+  CodeForgeKeyboardShortcuts get _shortcuts =>
+      CodeForgeKeyboardShortcuts.forPlatform(defaultTargetPlatform);
+
+  SingleActivator get _saveShortcut => switch (defaultTargetPlatform) {
+    TargetPlatform.macOS || TargetPlatform.iOS => const SingleActivator(
+      LogicalKeyboardKey.keyS,
+      meta: true,
+      includeRepeats: false,
+    ),
+    _ => const SingleActivator(
+      LogicalKeyboardKey.keyS,
+      control: true,
+      includeRepeats: false,
+    ),
+  };
+
+  bool get _isDirty {
+    final controller = _editor?.controller;
+    return controller != null &&
+        (controller.isModified || _titleController.text != widget.title);
+  }
 
   @override
   void initState() {
     super.initState();
-    readOnly = widget.onSave == null;
-    _toolbarController = ContextMenuControllerImpl(readOnly);
-    _focusNode = FocusNode();
-    _controller = CodeLineEditingController.fromText(widget.content);
-    _findController = CodeFindController(_controller);
-    _titleController = TextEditingController(text: widget.title);
-    if (system.isDesktop) {
+    readOnly = widget.readOnly ?? widget.onSave == null;
+    _undoController = UndoRedoController()..addListener(_syncBarState);
+    _titleController = TextEditingController(text: widget.title)
+      ..addListener(_syncBarState);
+    final load = widget.load;
+    final content = widget.content;
+    if (!editorNativeReady()) {
       return;
     }
-    _focusNode.onKeyEvent = ((_, event) {
-      final keys = HardwareKeyboard.instance.logicalKeysPressed;
-      final key = event.logicalKey;
-      if (!keys.contains(key)) {
-        return KeyEventResult.ignored;
-      }
-      if (key == LogicalKeyboardKey.arrowUp) {
-        _controller.moveCursor(AxisDirection.up);
-        return KeyEventResult.handled;
-      } else if (key == LogicalKeyboardKey.arrowDown) {
-        _controller.moveCursor(AxisDirection.down);
-        return KeyEventResult.handled;
-      } else if (key == LogicalKeyboardKey.arrowLeft) {
-        _controller.selection.endIndex;
-        _controller.moveCursor(AxisDirection.left);
-        return KeyEventResult.handled;
-      } else if (key == LogicalKeyboardKey.arrowRight) {
-        _controller.moveCursor(AxisDirection.right);
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    });
+    if (load != null) {
+      unawaited(_open(load));
+    } else if (content != null) {
+      unawaited(_open(() => CodeForgeDocument.fromText(content)));
+    }
   }
 
   @override
-  void didUpdateWidget(covariant oldWidget) {
+  void didUpdateWidget(covariant EditorPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final content = widget.content;
+    if (widget.load == null &&
+        content != null &&
+        content != oldWidget.content &&
+        editorNativeReady()) {
+      unawaited(_open(() => CodeForgeDocument.fromText(content)));
+    }
+  }
+
+  ({bool isDirty, bool canUndo, bool canRedo}) get _currentBarState => (
+    isDirty: _isDirty,
+    canUndo:
+        _undoController.canUndo ||
+        (_editor?.controller?.isComposingActive ?? false),
+    canRedo: _undoController.canRedo,
+  );
+
+  void _syncBarState() {
+    final next = _currentBarState;
+    if (next != _barState) {
+      setState(() => _barState = next);
+    }
+  }
+
+  void _handleReady() {
+    final controller = _editor?.controller;
+    controller?.addListener(_syncBarState);
+    _syncBarState();
+    final edit = widget.edit;
+    if (controller != null && edit != null) {
+      unawaited(_applyEdit(controller, edit));
+    }
+  }
+
+  Future<void> _applyEdit(
+    CodeForgeController controller,
+    String Function(String text) edit,
+  ) async {
+    final document = await CodeForgeDocument.fromText(edit(controller.text));
+    if (mounted && _editor?.controller == controller) {
+      controller.replaceDocument(document);
+    }
+    document.dispose();
+  }
+
+  @override
+  void didSettleRoute() {
+    final held = _heldDocument;
+    _heldDocument = null;
+    if (held != null) {
+      _show(held);
+    } else {
+      setState(() {});
+    }
+  }
+
+  Future<void> _open(Future<CodeForgeDocument> Function() open) async {
+    final generation = ++_openGeneration;
+    final document = await globalState.safeRun(() async {
+      try {
+        return await open();
+      } catch (_) {
+        if (!mounted) return null;
+        rethrow;
+      }
+    }, silence: false);
+    if (!mounted || generation != _openGeneration) {
+      document?.dispose();
+      return;
+    }
+    if (document == null) {
+      // The error dialog is on top, so pop() would close it instead.
+      final route = ModalRoute.of(context);
+      if (route != null) {
+        Navigator.of(context).removeRoute(route);
+      }
+      return;
+    }
+    if (!routeSettled) {
+      _heldDocument?.dispose();
+      _heldDocument = document;
+      return;
+    }
+    _show(document);
+  }
+
+  void _show(CodeForgeDocument document) {
+    final previous = _document;
+    setState(() {
+      _document = document;
+      _barState = _currentBarState;
+    });
+    previous?.dispose();
+  }
+
+  @override
+  void dispose() {
+    _undoController.dispose();
+    _titleController.dispose();
+    _document?.dispose();
+    _heldDocument?.dispose();
+    super.dispose();
+  }
+
+  void _handleSearch({bool replace = false}) {
+    _editor?.search(replace: replace);
+  }
+
+  void _commitComposing() {
+    _editor?.controller?.commitComposition();
+  }
+
+  void _handleSave() {
+    final onSave = widget.onSave;
+    if (onSave == null || readOnly || _saving) {
+      return;
+    }
+    _commitComposing();
+    if (!_isDirty) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      Navigator.of(context).popUntil((above) => above == route);
+    }
+    final saved = onSave(
+      context,
+      _titleController.text,
+      _EditedContent(_editor!.controller!),
+    );
+    if (saved is! Future<void>) {
+      return;
+    }
+    setState(() => _saving = true);
+    unawaited(
+      saved.whenComplete(() {
+        if (mounted) setState(() => _saving = false);
+      }),
+    );
+  }
+
+  Future<bool> _handlePop(BuildContext context) async {
+    final onPop = widget.onPop;
+    _commitComposing();
+    if (onPop == null || !_isDirty) {
+      return true;
+    }
+    final res = await onPop(
+      context,
+      _titleController.text,
+      _EditedContent(_editor!.controller!),
+    );
+    return res && context.mounted;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    final isReady = _document != null;
+    final lineWrap = ref.watch(
+      appSettingProvider.select((state) => state.editorLineWrap),
+    );
+    final fontSize = ref.watch(
+      appSettingProvider.select((state) => state.editorFontSize),
+    );
+    return PopGuard(
+      onPop: _handlePop,
+      child: CallbackShortcuts(
+        bindings: {
+          _saveShortcut: _handleSave,
+          _shortcuts.showFindBar: _handleSearch,
+          _shortcuts.showFindAndReplaceBar: () => _handleSearch(replace: true),
+        },
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            titleWidget: _EditorTitleField(
+              controller: _titleController,
+              enabled: widget.titleEditable,
+            ),
+            iconActions: [
+              IconButtonData(
+                glyph: AppGlyphs.search,
+                tooltip: appLocalizations.search,
+                onPressed: isReady ? _handleSearch : null,
+              ),
+            ],
+            confirmationAction: widget.onSave == null
+                ? null
+                : IconButtonData(
+                    glyph: AppGlyphs.check,
+                    tooltip: appLocalizations.save,
+                    onPressed: _barState.isDirty && !_saving
+                        ? _handleSave
+                        : null,
+                  ),
+            menuItems: [
+              PopupMenuItem(
+                glyph: AppGlyphs.undo,
+                label: appLocalizations.undo,
+                onPressed: _barState.canUndo ? _undoController.undo : null,
+              ),
+              PopupMenuItem(
+                glyph: AppGlyphs.redo,
+                label: appLocalizations.redo,
+                onPressed: _barState.canRedo ? _undoController.redo : null,
+              ),
+              PopupMenuItem(
+                glyph: AppGlyphs.textSize,
+                label: appLocalizations.fontSize,
+                subItems: [
+                  for (final size in EditorFontSize.values)
+                    PopupMenuItem(
+                      label: switch (size) {
+                        EditorFontSize.standard => appLocalizations.standard,
+                        EditorFontSize.large => appLocalizations.large,
+                        EditorFontSize.extraLarge =>
+                          appLocalizations.extraLarge,
+                      },
+                      checked: size == fontSize,
+                      onPressed: () => ref
+                          .read(appSettingProvider.notifier)
+                          .update(
+                            (state) => state.copyWith(editorFontSize: size),
+                          ),
+                    ),
+                ],
+              ),
+              PopupMenuItem(
+                glyph: AppGlyphs.wrap,
+                label: appLocalizations.lineWrap,
+                checked: lineWrap,
+                onPressed: () => ref
+                    .read(appSettingProvider.notifier)
+                    .update(
+                      (state) => state.copyWith(editorLineWrap: !lineWrap),
+                    ),
+              ),
+            ],
+            body: AbsorbPointer(
+              absorbing: _saving,
+              child: EditorView(
+                key: _editorKey,
+                document: _document,
+                language: widget.language,
+                schema: widget.schema,
+                readOnly: readOnly,
+                undoController: _undoController,
+                showsLoading: routeSettled,
+                onReady: _handleReady,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The code editor without page chrome, so it can fill a page or one pane
+/// of it. It shows its unavailable state when `main` did not initialise
+/// `RustLib`.
+class EditorView extends ConsumerStatefulWidget {
+  final CodeForgeDocument? document;
+  final Language language;
+  final EditorSchema schema;
+  final bool readOnly;
+  final UndoRedoController? undoController;
+  final bool showsLoading;
+  final VoidCallback? onReady;
+
+  const EditorView({
+    super.key,
+    required this.document,
+    this.language = Language.yaml,
+    this.schema = EditorSchema.config,
+    this.readOnly = false,
+    this.undoController,
+    this.showsLoading = true,
+    this.onReady,
+  });
+
+  @override
+  ConsumerState<EditorView> createState() => EditorViewState();
+}
+
+class EditorViewState extends ConsumerState<EditorView> {
+  CodeForgeController? _controller;
+  FindController? _findController;
+  UndoRedoController? _ownedUndoController;
+  Object? _initError;
+
+  CodeForgeController? get controller => _controller;
+
+  UndoRedoController get _undoController =>
+      widget.undoController ?? (_ownedUndoController ??= UndoRedoController());
+
+  @override
+  void initState() {
+    super.initState();
+    if (!editorNativeReady()) {
+      _initError = StateError('RustLib is not initialized');
+      return;
+    }
+    _show(widget.document);
+  }
+
+  @override
+  void didUpdateWidget(covariant EditorView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_initError == null && !identical(widget.document, oldWidget.document)) {
+      _show(widget.document);
+    }
+  }
+
+  // The first document fills the controller before CodeForge mounts, which
+  // spares it laying out an empty one. A later one waits for the frame,
+  // since loading notifies the page, which no build in progress may set.
+  void _show(CodeForgeDocument? document) {
+    if (document == null) {
+      return;
+    }
+    final controller = _controller;
+    if (controller == null) {
+      _controller = _load(CodeForgeController(), document);
+      _findController = FindController(_controller!);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.onReady?.call();
+        }
+      });
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final content = widget.content;
-      if (content != null && oldWidget.content != content) {
-        _controller.text = content;
-        _controller.clearHistory();
+      final document = widget.document;
+      if (mounted && document != null) {
+        _load(controller, document);
+        _undoController.clear();
       }
     });
   }
 
   @override
   void dispose() {
-    _toolbarController.hide(context);
-    _findController.dispose();
-    _controller.dispose();
-    _titleController.dispose();
-    _focusNode.dispose();
+    _findController?.dispose();
+    _controller?.dispose();
+    _ownedUndoController?.dispose();
     super.dispose();
   }
 
-  void _handleSearch() {
-    _findController.findMode();
-  }
+  CodeForgeController _load(
+    CodeForgeController controller,
+    CodeForgeDocument document,
+  ) => controller
+    ..load(document)
+    ..selection = const TextSelection.collapsed(offset: 0);
 
-  Future<void> _handleImportFormFile() async {
-    final file = await picker.pickerFile();
-    if (file == null) {
-      return;
-    }
-    final res = utf8.decode(await file.readBytes());
-    if (!mounted) {
-      return;
-    }
-    _controller.text = res;
-  }
-
-  Future<void> _handleImportFormUrl() async {
-    final appLocalizations = context.appLocalizations;
-    final url = await dialogs.showCommonDialog(
-      child: InputDialog(
-        title: appLocalizations.import,
-        value: '',
-        labelText: appLocalizations.url,
-        inputFormatters: TextInputLimits.limit(TextInputLimits.url),
-        validator: (value) {
-          if (value == null || value.isEmpty) {
-            return appLocalizations.emptyTip(appLocalizations.value);
-          }
-          if (!value.isUrl) {
-            return appLocalizations.urlTip(appLocalizations.value);
-          }
-          return null;
-        },
-      ),
-    );
-    if (url == null) {
-      return;
-    }
-    try {
-      final res = await request.getTextResponseForUrl(url);
-      if (!mounted) {
-        return;
-      }
-      _controller.text = res.data ?? '';
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-      final appLocalizations = context.appLocalizations;
-      context.showSnackBar(
-        networkErrorMessage(e, appLocalizations) ??
-            appLocalizations.unknownNetworkError,
-      );
-    }
-  }
-
-  Future<bool> _handlePop(BuildContext context) async {
-    final onPop = widget.onPop;
-    if (onPop == null) {
-      return true;
-    }
-    final res = await onPop(context, _titleController.text, _controller.text);
-    return res && context.mounted;
+  void search({bool replace = false}) {
+    _findController?.show(replace: replace && !widget.readOnly);
   }
 
   @override
   Widget build(BuildContext context) {
-    return CommonPopScope(
-      onPop: _handlePop,
-      child: CommonScaffold(
-        appBar: AppBar(
-          title: _EditorTitleField(
-            controller: _titleController,
-            enabled: widget.titleEditable,
-          ),
-          actions: genActions([
-            if (!readOnly)
-              _EditorSaveAction(
-                controller: _controller,
-                titleController: _titleController,
-                savedContent: widget.content,
-                savedTitle: widget.title,
-                onSave: widget.onSave!,
-              ),
-            _EditorMenuAction(
-              controller: _controller,
-              readOnly: readOnly,
-              supportRemoteDownload: widget.supportRemoteDownload,
-              onSearch: _handleSearch,
-              onImportFromUrl: _handleImportFormUrl,
-              onImportFromFile: _handleImportFormFile,
-            ),
-          ]),
-        ),
-        body: _EditorBody(
-          controller: _controller,
-          findController: _findController,
-          toolbarController: _toolbarController,
-          focusNode: _focusNode,
-          readOnly: readOnly,
-          languages: widget.languages,
-          isLoading: widget.content == null,
-        ),
-      ),
+    final controller = _controller;
+    return _EditorBody(
+      controller: controller,
+      findController: _findController,
+      undoController: _undoController,
+      readOnly: widget.readOnly,
+      language: widget.language,
+      schema: widget.schema,
+      error: _initError,
+      isLoading:
+          widget.showsLoading && _initError == null && controller == null,
     );
   }
 }
@@ -226,7 +587,7 @@ class _EditorTitleField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TextField(
-      maxLength: 20,
+      maxLength: TextInputLimits.name,
       enabled: enabled,
       controller: controller,
       decoration: InputDecoration(
@@ -234,208 +595,61 @@ class _EditorTitleField extends StatelessWidget {
         counter: const SizedBox(),
         hintText: context.appLocalizations.unnamed,
       ),
-      style: context.textTheme.titleLarge,
+      style: DefaultTextStyle.of(context).style,
       autofocus: false,
     );
   }
 }
 
-class _EditorSaveAction extends StatelessWidget {
-  const _EditorSaveAction({
-    required this.controller,
-    required this.titleController,
-    required this.savedContent,
-    required this.savedTitle,
-    required this.onSave,
-  });
-
-  final CodeLineEditingController controller;
-  final TextEditingController titleController;
-  final String? savedContent;
-  final String savedTitle;
-  final Function(BuildContext context, String title, String content) onSave;
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder(
-      valueListenable: controller,
-      builder: (_, _, _) => ValueListenableBuilder(
-        valueListenable: titleController,
-        builder: (context, _, _) {
-          final isDirty =
-              controller.text != savedContent ||
-              titleController.text != savedTitle;
-          return IconButton(
-            tooltip: context.appLocalizations.save,
-            onPressed: isDirty
-                ? () => onSave(context, titleController.text, controller.text)
-                : null,
-            icon: const Icon(Icons.save),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _EditorMenuAction extends ConsumerWidget {
-  const _EditorMenuAction({
-    required this.controller,
-    required this.readOnly,
-    required this.supportRemoteDownload,
-    required this.onSearch,
-    required this.onImportFromUrl,
-    required this.onImportFromFile,
-  });
-
-  final CodeLineEditingController controller;
-  final bool readOnly;
-  final bool supportRemoteDownload;
-  final VoidCallback onSearch;
-  final VoidCallback onImportFromUrl;
-  final VoidCallback onImportFromFile;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final appLocalizations = context.appLocalizations;
-    return ValueListenableBuilder(
-      valueListenable: controller,
-      builder: (_, _, _) {
-        return CommonPopupBox(
-          targetBuilder: (open) {
-            return IconButton(
-              tooltip: context.appLocalizations.more,
-              onPressed: () {
-                final isMobile = ref.read(isMobileViewProvider);
-                open(offset: Offset(0, isMobile ? 0 : 20));
-              },
-              icon: const Icon(Icons.more_vert),
-            );
-          },
-          popupBuilder: (_) => CommonPopupMenu(
-            items: [
-              CommonPopupMenuItem(
-                icon: Icons.search,
-                label: appLocalizations.search,
-                onPressed: onSearch,
-              ),
-              CommonPopupMenuItem(
-                icon: Icons.undo,
-                label: appLocalizations.undo,
-                onPressed: controller.canUndo ? controller.undo : null,
-              ),
-              CommonPopupMenuItem(
-                icon: Icons.redo,
-                label: appLocalizations.redo,
-                onPressed: controller.canRedo ? controller.redo : null,
-              ),
-              if (supportRemoteDownload && !readOnly)
-                CommonPopupMenuItem(
-                  icon: Icons.arrow_downward,
-                  label: appLocalizations.externalFetch,
-                  subItems: [
-                    CommonPopupMenuItem(
-                      label: appLocalizations.importUrl,
-                      onPressed: onImportFromUrl,
-                    ),
-                    CommonPopupMenuItem(
-                      label: appLocalizations.importFile,
-                      onPressed: onImportFromFile,
-                    ),
-                  ],
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _EditorBody extends ConsumerWidget {
+class _EditorBody extends StatelessWidget {
   const _EditorBody({
     required this.controller,
     required this.findController,
-    required this.toolbarController,
-    required this.focusNode,
+    required this.undoController,
     required this.readOnly,
-    required this.languages,
+    required this.language,
+    required this.schema,
+    required this.error,
     required this.isLoading,
   });
 
-  final CodeLineEditingController controller;
-  final CodeFindController findController;
-  final SelectionToolbarController toolbarController;
-  final FocusNode focusNode;
+  final CodeForgeController? controller;
+  final FindController? findController;
+  final UndoRedoController undoController;
   final bool readOnly;
-  final List<Language> languages;
+  final Language language;
+  final EditorSchema schema;
+  final Object? error;
   final bool isLoading;
 
-  CodeHighlightTheme get _highlightTheme {
-    return CodeHighlightTheme(
-      languages: {
-        if (languages.contains(Language.yaml))
-          'yaml': CodeHighlightThemeMode(mode: langYaml),
-        if (languages.contains(Language.javaScript))
-          'javascript': CodeHighlightThemeMode(mode: langJavascript),
-        if (languages.contains(Language.json))
-          'json': CodeHighlightThemeMode(mode: langJson),
-      },
-      theme: atomOneLightTheme,
-    );
-  }
-
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final isMobileView = ref.watch(isMobileViewProvider);
+  Widget build(BuildContext context) {
+    final controller = this.controller;
+    final findController = this.findController;
+    final error = this.error;
     return Stack(
       children: [
-        CodeEditor(
-          readOnly: readOnly,
-          autofocus: false,
-          showCursorWhenReadOnly: false,
-          findController: findController,
-          findBuilder: (context, controller, readOnly) => FindPanel(
+        if (error != null)
+          NullStatus(
+            label: context.appLocalizations.editorUnavailable,
+            description: '$error',
+            illustration: NullStatusIllustration.error,
+          )
+        else if (controller != null && findController != null)
+          _CodeEditor(
             controller: controller,
+            findController: findController,
+            undoController: undoController,
             readOnly: readOnly,
-            isMobileView: isMobileView,
+            language: language,
+            schema: schema,
           ),
-          padding: const EdgeInsets.only(right: 16),
-          autocompleteSymbols: true,
-          focusNode: focusNode,
-          scrollbarBuilder: (context, child, details) {
-            return CommonScrollBar(
-              controller: details.controller,
-              child: child,
-            );
-          },
-          toolbarController: toolbarController,
-          indicatorBuilder:
-              (context, editingController, chunkController, notifier) {
-                return _EditorGutter(
-                  controller: editingController,
-                  chunkController: chunkController,
-                  notifier: notifier,
-                );
-              },
-          shortcutsActivatorsBuilder:
-              const DefaultCodeShortcutsActivatorsBuilder(),
-          controller: controller,
-          style: CodeEditorStyle(
-            fontSize: context.textTheme.bodyLarge?.fontSize?.ap,
-            fontFamily: FontFamily.jetBrainsMono.value,
-            codeTheme: _highlightTheme,
-          ),
-        ),
         FadeBox(
           child: isLoading
               ? Container(
                   color: context.colorScheme.surface,
                   alignment: Alignment.center,
-                  child: const SizedBox.square(
-                    dimension: 200,
-                    child: CommonCircleLoading(),
-                  ),
+                  child: const ActivityIndicator.page(),
                 )
               : const SizedBox.shrink(),
         ),
@@ -444,337 +658,720 @@ class _EditorBody extends ConsumerWidget {
   }
 }
 
-class _EditorGutter extends StatelessWidget {
-  const _EditorGutter({
+class _CodeEditor extends ConsumerStatefulWidget {
+  const _CodeEditor({
     required this.controller,
-    required this.chunkController,
-    required this.notifier,
+    required this.findController,
+    required this.undoController,
+    required this.readOnly,
+    required this.language,
+    required this.schema,
   });
 
-  final CodeLineEditingController controller;
-  final CodeChunkController chunkController;
-  final CodeIndicatorValueNotifier notifier;
+  final CodeForgeController controller;
+  final FindController findController;
+  final UndoRedoController undoController;
+  final bool readOnly;
+  final Language language;
+  final EditorSchema schema;
+
+  @override
+  ConsumerState<_CodeEditor> createState() => _CodeEditorState();
+}
+
+class _CodeEditorState extends ConsumerState<_CodeEditor> {
+  // CodeForge compares these by identity and rebuilds its whole layout and
+  // highlighter on any change, so each is rebuilt only when its inputs change.
+  ColorScheme? _colorScheme;
+  Map<String, TextStyle> _editorTheme = const {};
+  CodeSelectionStyle? _selectionStyle;
+  TextStyle? _textStyle;
+  TextStyle? _lineNumberStyle;
+  EdgeInsets _innerPadding = const EdgeInsets.only(right: 16);
+  late bool _findActive = widget.findController.isActive;
+  late CodeForgeCompletionSource? _completionSource = editorCompletionSource(
+    widget.language,
+    widget.schema,
+  );
+  late final ScrollController _verticalController;
+
+  @override
+  void initState() {
+    super.initState();
+    _verticalController = sheetScrollController(context);
+    widget.findController.addListener(_handleFindChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CodeEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.findController != widget.findController) {
+      oldWidget.findController.removeListener(_handleFindChanged);
+      widget.findController.addListener(_handleFindChanged);
+      _handleFindChanged();
+    }
+    if (oldWidget.language != widget.language ||
+        oldWidget.schema != widget.schema) {
+      _completionSource = editorCompletionSource(
+        widget.language,
+        widget.schema,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.findController.removeListener(_handleFindChanged);
+    _verticalController.dispose();
+    super.dispose();
+  }
+
+  void _handleFindChanged() {
+    final isActive = widget.findController.isActive;
+    if (isActive != _findActive) {
+      setState(() {
+        _findActive = isActive;
+      });
+    }
+  }
+
+  // The bar floats over the text, which scrolls under it from a first line
+  // held clear of it; an open find panel takes that clearance instead.
+  void _updateInnerPadding(BuildContext context) {
+    final padding = EdgeInsets.only(
+      top: _findActive ? _findRowGap : context.appBarInset,
+      right: 16,
+      bottom: context.bottomInset,
+    );
+    if (padding != _innerPadding) {
+      _innerPadding = padding;
+    }
+  }
+
+  void _updateStyles(BuildContext context, EditorFontSize fontSize) {
+    final colorScheme = context.colorScheme;
+    final schemeChanged = colorScheme != _colorScheme;
+    if (schemeChanged) {
+      _colorScheme = colorScheme;
+      _editorTheme = _highlightTheme(colorScheme, widget.language);
+      _selectionStyle = CodeSelectionStyle(
+        cursorColor: colorScheme.primary,
+        selectionColor: textSelectionColorOf(colorScheme),
+        cursorBubbleColor: colorScheme.primary,
+      );
+    }
+    final appFont = AppTextStyle.footnote.of(context);
+    final textStyle = TextStyle(
+      fontSize: fontSize.value,
+      fontFamily: FontFamily.jetBrainsMono.value,
+      fontFamilyFallback: [
+        FontFamily.twEmoji.value,
+        ?appFont.fontFamily,
+        ...?appFont.fontFamilyFallback,
+      ],
+    );
+    if (textStyle != _textStyle) {
+      _textStyle = textStyle;
+    }
+    _lineNumberStyle = TextStyle(
+      fontSize: 12,
+      fontFamily: appFont.fontFamily,
+      fontFamilyFallback: appFont.fontFamilyFallback,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+  }
+
+  void _showClipboardWriteFailed() {
+    if (!mounted) {
+      return;
+    }
+    dialogs.showBanner(
+      context.appLocalizations.clipboardWriteFailed,
+      level: BannerLevel.error,
+    );
+  }
+
+  void _showContextMenu(
+    BuildContext context,
+    CodeForgeContextMenuRequest request,
+  ) {
+    final appLocalizations = context.appLocalizations;
+    final navigator = Navigator.of(context);
+    final navigatorBox = navigator.context.findRenderObject();
+    if (navigatorBox is! RenderBox) {
+      return;
+    }
+    final point = navigatorBox.globalToLocal(request.globalPosition);
+    final controller = widget.controller;
+    late final PopupRoute<void> route;
+    late final ValueNotifier<List<PopupMenuItem>> items;
+    late final ValueNotifier<Rect> anchor;
+    var selection = controller.selection;
+    var selectingAll = false;
+
+    void close() {
+      if (route.isCurrent) navigator.pop();
+    }
+
+    Rect anchorRect() {
+      final rect = request.selectionRect;
+      return rect == null
+          ? point & Size.zero
+          : Rect.fromPoints(
+              navigatorBox.globalToLocal(rect.topLeft),
+              navigatorBox.globalToLocal(rect.bottomRight),
+            );
+    }
+
+    List<PopupMenuItem> menuItems() => [
+      if (request.hasSelection && !request.readOnly)
+        PopupMenuItem(
+          glyph: AppGlyphs.cut,
+          label: appLocalizations.cut,
+          onPressed: () {
+            request.cut();
+            close();
+          },
+        ),
+      if (request.hasSelection)
+        PopupMenuItem(
+          glyph: AppGlyphs.copy,
+          label: appLocalizations.copy,
+          onPressed: () {
+            request.copy();
+            close();
+          },
+        ),
+      if (!request.readOnly)
+        PopupMenuItem(
+          glyph: AppGlyphs.paste,
+          label: appLocalizations.paste,
+          onPressed: () {
+            request.paste();
+            close();
+          },
+        ),
+      if (!request.isAllSelected)
+        PopupMenuItem(
+          glyph: AppGlyphs.selectAll,
+          label: appLocalizations.selectAll,
+          onPressed: () {
+            selectingAll = true;
+            request.selectAll();
+            selectingAll = false;
+            selection = controller.selection;
+            if (!route.isCurrent) return;
+            items.value = menuItems();
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (route.isActive) anchor.value = anchorRect();
+            });
+          },
+        ),
+    ];
+
+    items = ValueNotifier(menuItems());
+    if (items.value.isEmpty) {
+      return;
+    }
+    anchor = ValueNotifier(anchorRect());
+    route = system.isDesktop
+        ? AnchoredPopupRoute<void>(
+            barrierLabel: UiLocalizations.of(context).close,
+            placement: PopupPlacement.belowPoint,
+            modal: false,
+            anchorOf: () => point & Size.zero,
+            builder: (_) => PopupMenu(items: items.value),
+          )
+        : EditMenuRoute(
+            barrierLabel: UiLocalizations.of(context).close,
+            items: items,
+            selection: anchor,
+          );
+    final version = controller.contentVersion;
+    final composition = controller.imeComposition;
+    final focusNode = controller.focusNode;
+    final hadFocus = focusNode?.hasFocus ?? false;
+    // Typing or a focus change reaches the editor with no pointer down.
+    void closeOnceOutdated() {
+      if (selectingAll) return;
+      final outdated =
+          controller.selection != selection ||
+          controller.contentVersion != version ||
+          controller.imeComposition != composition ||
+          hadFocus && !focusNode!.hasFocus;
+      if (outdated) close();
+    }
+
+    controller.addListener(closeOnceOutdated);
+    focusNode?.addListener(closeOnceOutdated);
+    navigator.push(route).whenComplete(() {
+      controller.removeListener(closeOnceOutdated);
+      focusNode?.removeListener(closeOnceOutdated);
+    });
+    unawaited(
+      route.completed.whenComplete(() {
+        items.dispose();
+        anchor.dispose();
+      }),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        DefaultCodeLineNumber(controller: controller, notifier: notifier),
-        DefaultCodeChunkIndicator(
-          width: 20,
-          controller: chunkController,
-          notifier: notifier,
+    _updateStyles(
+      context,
+      ref.watch(appSettingProvider.select((state) => state.editorFontSize)),
+    );
+    _updateInnerPadding(context);
+    final lineWrap = ref.watch(
+      appSettingProvider.select((state) => state.editorLineWrap),
+    );
+    widget.controller
+      ..enableLocalSuggestions = !widget.readOnly
+      ..completionSource = widget.readOnly ? null : _completionSource
+      ..onClipboardWriteFailed = _showClipboardWriteFailed;
+    return CodeForge(
+      controller: widget.controller,
+      findController: widget.findController,
+      undoController: widget.undoController,
+      verticalScrollController: _verticalController,
+      readOnly: widget.readOnly,
+      language: switch (widget.language) {
+        Language.yaml => langYaml,
+        Language.javaScript => langJavascript,
+        Language.json => langJson,
+        Language.ini => langIni,
+        Language.xml => langXml,
+        Language.text => langPlaintext,
+      },
+      editorTheme: _editorTheme,
+      tabSize: 2,
+      useSpaceAsTab: true,
+      selectionStyle: _selectionStyle,
+      suggestionPopupBuilder: (_, details) => CustomSingleChildLayout(
+        delegate: CaretPopupLayout(
+          caretRect: details.caretRect,
+          padding: EdgeInsets.only(top: _innerPadding.top),
         ),
-      ],
+        child: EditorCompletionPopup(details: details, textStyle: _textStyle!),
+      ),
+      magnifierBuilder: (context, controller, magnifierInfo) =>
+          TextLoupe(controller: controller, magnifierInfo: magnifierInfo),
+      textStyle: _textStyle,
+      lineWrap: lineWrap,
+      lineNumberStyle: _lineNumberStyle,
+      innerPadding: _innerPadding,
+      onContextMenu: _showContextMenu,
+      scrollbarBuilder: (context, details, child) => FloatingScrollbar(
+        controller: details.controller,
+        thumbVisibility: true,
+        hintBuilder: (_) =>
+            '${details.firstVisibleLine.value} / ${widget.controller.lineCount}',
+        child: _NoMouseDragScroll(child: child),
+      ),
+      finderBuilder: (context, findController) => FindPanel(
+        controller: findController,
+        topInset: context.appBarInset,
+        readOnly: widget.readOnly,
+      ),
     );
   }
 }
 
-const double _kDefaultFindPanelHeight = 52;
+// The app's desktop behavior would also pan the view on a mouse drag-select.
+class _NoMouseDragScroll extends StatelessWidget {
+  const _NoMouseDragScroll({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final behavior = ScrollConfiguration.of(context);
+    return ScrollConfiguration(
+      behavior: behavior.copyWith(
+        dragDevices: {...behavior.dragDevices}..remove(PointerDeviceKind.mouse),
+      ),
+      child: child,
+    );
+  }
+}
+
+// atom-one colours keys and numbers alike and has no entry for several scopes
+// highlight.js emits, which then render as plain text. Mapping them onto the
+// palette gives each kind of token one colour in every language.
+Map<String, TextStyle> _highlightTheme(
+  ColorScheme colorScheme,
+  Language language,
+) {
+  final palette = colorScheme.brightness == Brightness.dark
+      ? atomOneDarkTheme
+      : atomOneLightTheme;
+  return {
+    ...palette,
+    'attr': palette['name']!,
+    'property': palette['name']!,
+    'title.function': palette['title']!,
+    'title.class': palette['title.class_']!,
+    'title.class.inherited': palette['title.class_']!,
+    'variable.language': palette['built_in']!,
+    // The JSON grammar nests `true`, `false` and `null` as keywords in a literal.
+    if (language == Language.json) 'keyword': palette['literal']!,
+    'root': TextStyle(
+      color: colorScheme.onSurface,
+      backgroundColor: colorScheme.surface,
+    ),
+  };
+}
+
+const _findButtonSize = TonalButtonSize.bar;
+const double _findRowGap = 8;
+const double _findInlineMinWidth = 440;
+const _findPanelPadding = EdgeInsets.symmetric(horizontal: 16, vertical: 8);
 
 class FindPanel extends StatelessWidget implements PreferredSizeWidget {
-  final CodeFindController controller;
+  final FindController controller;
   final bool readOnly;
-  final bool isMobileView;
-  final double height;
+  final double topInset;
 
   const FindPanel({
     super.key,
     required this.controller,
     required this.readOnly,
-    required this.isMobileView,
-  }) : height =
-           (isMobileView
-               ? _kDefaultFindPanelHeight * 2
-               : _kDefaultFindPanelHeight) +
-           8;
+    this.topInset = 0,
+  });
+
+  bool get _showReplace => controller.isReplaceMode && !readOnly;
+
+  double get height {
+    final rows = _showReplace ? 2 : 1;
+    return _findButtonSize.button * rows +
+        _findRowGap * (rows - 1) +
+        _findPanelPadding.vertical;
+  }
 
   @override
-  Size get preferredSize =>
-      Size(double.infinity, controller.value == null ? 0 : height);
+  Size get preferredSize => Size(double.infinity, height + topInset);
 
   @override
   Widget build(BuildContext context) {
-    if (controller.value == null) {
-      return const SizedBox(width: 0, height: 0);
-    }
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      margin: const EdgeInsets.only(bottom: 8),
-      color: context.colorScheme.surface,
-      alignment: Alignment.centerLeft,
-      height: height,
-      child: _buildFindInputView(context),
+    // On macOS a focused text field hands Escape to the input method, which
+    // comes back as a DismissIntent rather than a key event.
+    return Actions(
+      actions: {
+        DismissIntent: CallbackAction<DismissIntent>(
+          onInvoke: (_) => controller.hide(),
+        ),
+      },
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): controller.hide,
+          const SingleActivator(LogicalKeyboardKey.enter, shift: true):
+              controller.previous,
+        },
+        child: Container(
+          margin: EdgeInsets.only(top: topInset),
+          padding: _findPanelPadding,
+          color: context.surfaceLevel.colorOf(context.colorScheme),
+          child: GooSurface(
+            color: context.raisedSurfaceLevel.colorOf(context.colorScheme),
+            child: LayoutBuilder(builder: _buildRows),
+          ),
+        ),
+      ),
     );
   }
 
-  Widget _buildFindInputView(BuildContext context) {
-    final CodeFindValue value = controller.value!;
-    final String result;
-    if (value.result == null) {
-      result = context.appLocalizations.none;
-    } else {
-      result = '${value.result!.index + 1}/${value.result!.matches.length}';
-    }
-    final bar = CommonMinIconButtonTheme(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          if (!isMobileView) ...[
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 360),
-              child: _buildFindInput(context, value),
+  // A table, so the replace field lines up with the find field above it
+  // whatever width the localized replace labels take. Too narrow for the
+  // buttons beside the field, they move under it.
+  Widget _buildRows(BuildContext context, BoxConstraints constraints) {
+    final appLocalizations = context.appLocalizations;
+    final hasMatches = controller.matchCount > 0;
+    final findInput = _buildFindInput(context);
+    final controls = Row(
+      children: [
+        TonalButtonGroup(
+          size: _findButtonSize,
+          children: [
+            IconButton(
+              tooltip: appLocalizations.previousMatch,
+              onPressed: hasMatches ? controller.previous : null,
+              icon: const GlyphIcon(AppGlyphs.chevronUp),
             ),
-            const SizedBox(width: 12),
+            IconButton(
+              tooltip: appLocalizations.nextMatch,
+              onPressed: hasMatches ? controller.next : null,
+              icon: const GlyphIcon(AppGlyphs.chevronDown),
+            ),
           ],
-          Text(result, style: context.textTheme.bodyMedium),
-          Expanded(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              spacing: 2,
-              children: [
-                _buildIconButton(
-                  onPressed: value.result == null
-                      ? null
-                      : () {
-                          controller.previousMatch();
-                        },
-                  icon: Icons.arrow_upward,
-                  tooltip: context.appLocalizations.previousMatch,
-                ),
-                _buildIconButton(
-                  onPressed: value.result == null
-                      ? null
-                      : () {
-                          controller.nextMatch();
-                        },
-                  icon: Icons.arrow_downward,
-                  tooltip: context.appLocalizations.nextMatch,
-                ),
-                const SizedBox(width: 2),
-                IconButton.filledTonal(
-                  tooltip: context.appLocalizations.close,
-                  onPressed: controller.close,
-                  icon: const Icon(Icons.close, size: 16),
-                ),
-              ],
-            ),
+        ),
+        if (!readOnly) ...[
+          const SizedBox(width: 8),
+          _FindBarButton(
+            glyph: AppGlyphs.swap,
+            tooltip: appLocalizations.replace,
+            selected: _showReplace,
+            onPressed: controller.toggleReplaceMode,
           ),
         ],
-      ),
+        const Spacer(),
+        const SizedBox(width: 8),
+        _FindBarButton(
+          glyph: AppGlyphs.close,
+          tooltip: appLocalizations.close,
+          onPressed: controller.hide,
+        ),
+      ],
     );
-    if (isMobileView) {
+    final replaceActions = TonalButtonGroup(
+      size: _findButtonSize,
+      children: [
+        FilledButton(
+          onPressed: hasMatches ? controller.replace : null,
+          child: Text(appLocalizations.replace),
+        ),
+        FilledButton(
+          onPressed: hasMatches ? controller.replaceAll : null,
+          child: Text(appLocalizations.replaceAll),
+        ),
+      ],
+    );
+    final inlineMinWidth = MediaQuery.textScalerOf(
+      context,
+    ).scale(_findInlineMinWidth);
+    if (constraints.maxWidth < inlineMinWidth) {
       return Column(
         mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        spacing: _findRowGap,
         children: [
-          bar,
-          const SizedBox(height: 12),
-          _buildFindInput(context, value),
+          findInput,
+          controls,
+          if (_showReplace)
+            Row(
+              spacing: 8,
+              children: [
+                Expanded(child: _buildReplaceInput(context)),
+                replaceActions,
+              ],
+            ),
         ],
       );
     }
-    return bar;
-  }
-
-  Widget _buildFindInput(BuildContext context, CodeFindValue value) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.end,
-      spacing: 8,
+    return Table(
+      columnWidths: const {0: FlexColumnWidth(), 1: IntrinsicColumnWidth()},
+      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
       children: [
-        Flexible(
-          child: _buildTextField(
-            context: context,
-            onSubmitted: () {
-              if (value.result == null) {
-                return;
-              }
-              controller.nextMatch();
-              controller.findInputFocusNode.requestFocus();
-            },
-            controller: controller.findInputController,
-            focusNode: controller.findInputFocusNode,
+        TableRow(
+          children: [
+            findInput,
+            Padding(
+              padding: const EdgeInsetsDirectional.only(start: 8),
+              child: controls,
+            ),
+          ],
+        ),
+        if (_showReplace)
+          TableRow(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: _findRowGap),
+                child: _buildReplaceInput(context),
+              ),
+              Padding(
+                padding: const EdgeInsetsDirectional.only(
+                  start: 8,
+                  top: _findRowGap,
+                ),
+                child: Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: replaceActions,
+                ),
+              ),
+            ],
           ),
-        ),
-        _buildCheckText(
-          context: context,
-          text: 'Aa',
-          isSelected: value.option.caseSensitive,
-          onPressed: () {
-            controller.toggleCaseSensitive();
-          },
-        ),
-        _buildCheckText(
-          context: context,
-          text: '.*',
-          isSelected: value.option.regex,
-          onPressed: () {
-            controller.toggleRegex();
-          },
-        ),
-        const SizedBox(width: 4),
       ],
     );
   }
 
-  Widget _buildTextField({
-    required BuildContext context,
-    required TextEditingController controller,
-    required FocusNode focusNode,
-    required VoidCallback onSubmitted,
-  }) {
-    return SizedBox(
-      height: globalState.measure.bodyMediumHeight + 8 * 2,
-      child: TextField(
-        maxLines: 1,
-        focusNode: focusNode,
-        inputFormatters: TextInputLimits.limit(TextInputLimits.search),
-        style: context.textTheme.bodyMedium,
-        decoration: const InputDecoration(
-          contentPadding: EdgeInsets.symmetric(horizontal: 12),
-        ),
-        onSubmitted: (_) {
-          onSubmitted();
-        },
-        controller: controller,
-      ),
-    );
-  }
-
-  Widget _buildCheckText({
-    required BuildContext context,
-    required String text,
-    required bool isSelected,
-    required VoidCallback onPressed,
-  }) {
-    return SizedBox(
-      width: 28,
-      height: 28,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: isSelected
-            ? IconButton.filledTonal(
-                onPressed: onPressed,
-                padding: const EdgeInsets.all(2),
-                icon: Text(text, style: context.textTheme.bodySmall),
-              )
-            : IconButton(
-                onPressed: onPressed,
-                padding: const EdgeInsets.all(2),
-                icon: Text(text, style: context.textTheme.bodySmall),
+  Widget _buildFindInput(BuildContext context) {
+    final String? result;
+    if (controller.findInputController.text.isEmpty) {
+      result = null;
+    } else if (controller.matchCount == 0) {
+      result = context.appLocalizations.none;
+    } else {
+      result = '${controller.currentMatchIndex + 1}/${controller.matchCount}';
+    }
+    return _FindField(
+      glyph: AppGlyphs.search,
+      hintText: context.appLocalizations.search,
+      controller: controller.findInputController,
+      focusNode: controller.findInputFocusNode,
+      onSubmitted: () {
+        controller.next();
+        controller.findInputFocusNode.requestFocus();
+      },
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (result != null)
+            Padding(
+              padding: const EdgeInsetsDirectional.only(end: 4),
+              child: Text(
+                result,
+                style: AppTextStyle.subheadline
+                    .of(context)
+                    .copyWith(
+                      color: context.colorScheme.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
               ),
+            ),
+          _FindOptionToggle(
+            glyph: AppGlyphs.matchCase,
+            tooltip: context.appLocalizations.matchCase,
+            selected: controller.caseSensitive,
+            onPressed: controller.toggleCaseSensitive,
+          ),
+          const SizedBox(width: 2),
+          _FindOptionToggle(
+            glyph: AppGlyphs.regex,
+            tooltip: context.appLocalizations.regex,
+            selected: controller.isRegex,
+            onPressed: controller.toggleRegex,
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildIconButton({
-    required IconData icon,
-    required String tooltip,
-    VoidCallback? onPressed,
-  }) {
-    return IconButton(
-      tooltip: tooltip,
-      onPressed: onPressed,
-      icon: Icon(icon, size: 16),
+  Widget _buildReplaceInput(BuildContext context) {
+    return _FindField(
+      glyph: AppGlyphs.swap,
+      hintText: context.appLocalizations.replace,
+      controller: controller.replaceInputController,
+      focusNode: controller.replaceInputFocusNode,
+      onSubmitted: () {
+        if (controller.matchCount == 0) {
+          return;
+        }
+        controller.replace();
+        controller.replaceInputFocusNode.requestFocus();
+      },
     );
   }
 }
 
-class ContextMenuControllerImpl implements SelectionToolbarController {
-  OverlayEntry? _overlayEntry;
-  bool _isFirstRender = true;
-  bool readOnly = false;
+/// A search field among the bar's buttons, on the surface they share.
+class _FindField extends StatelessWidget {
+  const _FindField({
+    required this.glyph,
+    required this.hintText,
+    required this.controller,
+    required this.focusNode,
+    required this.onSubmitted,
+    this.trailing,
+  });
 
-  ContextMenuControllerImpl(this.readOnly);
-
-  void _removeOverLayEntry() {
-    _overlayEntry?.remove();
-    _overlayEntry = null;
-    _isFirstRender = true;
-  }
+  final Glyph glyph;
+  final String hintText;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onSubmitted;
+  final Widget? trailing;
 
   @override
-  void hide(BuildContext context) {
-    _removeOverLayEntry();
-  }
-
-  @override
-  void show({
-    required context,
-    required controller,
-    required anchors,
-    renderRect,
-    required layerLink,
-    required ValueNotifier<bool> visibility,
-  }) {
-    _removeOverLayEntry();
-    _overlayEntry ??= OverlayEntry(
-      builder: (context) => CodeEditorTapRegion(
-        child: ValueListenableBuilder(
-          valueListenable: controller,
-          builder: (context, _, child) {
-            final appLocalizations = context.appLocalizations;
-            final isNotEmpty = controller.selectedText.isNotEmpty;
-            final isAllSelected = controller.isAllSelected;
-            final hasSelected = controller.selectedText.isNotEmpty;
-            final List<CommonPopupMenuItem> menus = [
-              if (isNotEmpty)
-                CommonPopupMenuItem(
-                  label: appLocalizations.copy,
-                  onPressed: controller.copy,
-                ),
-              if (!readOnly)
-                CommonPopupMenuItem(
-                  label: appLocalizations.paste,
-                  onPressed: controller.paste,
-                ),
-              if (isNotEmpty && !readOnly)
-                CommonPopupMenuItem(
-                  label: appLocalizations.cut,
-                  onPressed: controller.cut,
-                ),
-              if (hasSelected && !isAllSelected)
-                CommonPopupMenuItem(
-                  label: appLocalizations.selectAll,
-                  onPressed: controller.selectAll,
-                ),
-            ];
-            if (_isFirstRender) {
-              _isFirstRender = false;
-            } else if (controller.selectedText.isEmpty) {
-              _removeOverLayEntry();
-            }
-            if (menus.isEmpty) {
-              _removeOverLayEntry();
-              return const SizedBox();
-            }
-            return TextSelectionToolbar(
-              anchorAbove: anchors.primaryAnchor,
-              anchorBelow: anchors.secondaryAnchor ?? Offset.zero,
-              children: menus.asMap().entries.map((
-                MapEntry<int, CommonPopupMenuItem> entry,
-              ) {
-                return TextSelectionToolbarTextButton(
-                  padding: TextSelectionToolbarTextButton.getPadding(
-                    entry.key,
-                    menus.length,
-                  ),
-                  alignment: AlignmentDirectional.centerStart,
-                  onPressed: () {
-                    if (entry.value.onPressed == null) {
-                      return;
-                    }
-                    entry.value.onPressed!();
-                    _removeOverLayEntry();
-                  },
-                  child: Text(entry.value.label),
-                );
-              }).toList(),
-            );
-          },
+  Widget build(BuildContext context) {
+    return ElasticPress(
+      child: GooPane(
+        child: SearchField(
+          height: _findButtonSize.button,
+          glyph: glyph,
+          hintText: hintText,
+          controller: controller,
+          focusNode: focusNode,
+          onSubmitted: onSubmitted,
+          trailing: trailing,
         ),
       ),
     );
-    Overlay.of(context).insert(_overlayEntry!);
+  }
+}
+
+class _FindOptionToggle extends StatelessWidget {
+  const _FindOptionToggle({
+    required this.glyph,
+    required this.tooltip,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final Glyph glyph;
+  final String tooltip;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = context.colorScheme;
+    return ElasticPress(
+      child: IconButton(
+        tooltip: tooltip,
+        isSelected: selected,
+        onPressed: onPressed,
+        style: ButtonStyle.from(
+          backgroundColor: selected ? colorScheme.primary : null,
+          foregroundColor: selected
+              ? colorScheme.onPrimary
+              : colorScheme.onSurfaceVariant,
+          fixedSize: Size.square(TonalButtonSize.compact.button),
+          minimumSize: Size.square(TonalButtonSize.compact.button),
+          padding: EdgeInsets.zero,
+          iconSize: TonalButtonSize.compact.icon,
+          visualDensity: VisualDensity.standard,
+          tapTargetSize: TapTargetSize.shrinkWrap,
+          pressLook: PressLook.none,
+          ringStandsOff: selected,
+        ),
+        icon: AnimatedGlyph(glyph: glyph, filled: selected),
+      ),
+    );
+  }
+}
+
+class _FindBarButton extends StatelessWidget {
+  const _FindBarButton({
+    required this.glyph,
+    required this.tooltip,
+    required this.onPressed,
+    this.selected = false,
+  });
+
+  final Glyph glyph;
+  final String tooltip;
+  final VoidCallback onPressed;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = context.colorScheme;
+    return TonalButtonTheme(
+      size: _findButtonSize,
+      child: ElasticPress(
+        child: IconButton(
+          tooltip: tooltip,
+          isSelected: selected,
+          onPressed: onPressed,
+          style: selected
+              ? ButtonStyle.from(
+                  backgroundColor: colorScheme.primary,
+                  foregroundColor: colorScheme.onPrimary,
+                  ringStandsOff: true,
+                )
+              : null,
+          icon: GlyphIcon(glyph),
+        ),
+      ),
+    );
   }
 }

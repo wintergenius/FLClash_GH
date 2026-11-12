@@ -66,33 +66,44 @@ void main() {
     });
   });
 
-  group('getOverwriteLabel', () {
+  group('uniqueLabelFor', () {
+    String unique(String name, Set<String> taken) =>
+        uniqueLabelFor(name, fallback: 'Fallback', taken: taken.contains);
+
+    test('keeps a free label', () {
+      expect(unique('foo', {}), 'foo');
+    });
+
     test('appends (1) to label without number', () {
-      expect(getOverwriteLabel('foo'), 'foo(1)');
+      expect(unique('foo', {'foo'}), 'foo(1)');
     });
 
     test('increments existing number', () {
-      expect(getOverwriteLabel('foo(1)'), 'foo(2)');
+      expect(unique('foo(1)', {'foo(1)'}), 'foo(2)');
     });
 
     test('increments higher numbers', () {
-      expect(getOverwriteLabel('foo(9)'), 'foo(10)');
+      expect(unique('foo(9)', {'foo(9)'}), 'foo(10)');
     });
 
     test('increments a two-digit suffix into three digits', () {
-      expect(getOverwriteLabel('foo(99)'), 'foo(100)');
+      expect(unique('foo(99)', {'foo(99)'}), 'foo(100)');
     });
 
     test('increments an existing three-digit suffix', () {
-      expect(getOverwriteLabel('foo(100)'), 'foo(101)');
+      expect(unique('foo(100)', {'foo(100)'}), 'foo(101)');
     });
 
     test('increments a bare parenthesized number', () {
-      expect(getOverwriteLabel('(1)'), '(2)');
+      expect(unique('(1)', {'(1)'}), '(2)');
     });
 
     test('increments a single-character label', () {
-      expect(getOverwriteLabel('a(1)'), 'a(2)');
+      expect(unique('a(1)', {'a(1)'}), 'a(2)');
+    });
+
+    test('steps past numbers already taken', () {
+      expect(unique('foo', {'foo', 'foo(1)', 'foo(2)'}), 'foo(3)');
     });
   });
 
@@ -138,6 +149,52 @@ void main() {
     });
   });
 
+  group('canExpandSidebar', () {
+    test('expands only in the desktop view mode', () {
+      expect(canExpandSidebar(getViewMode(maxLaptopWidth + 1)), isTrue);
+      expect(canExpandSidebar(getViewMode(maxLaptopWidth.toDouble())), isFalse);
+      expect(canExpandSidebar(ViewMode.mobile), isFalse);
+    });
+  });
+
+  group('windowControlsOverSidebar', () {
+    test('only macOS 11 and later draw the traffic lights over it', () {
+      expect(
+        windowControlsOverSidebar(isMacOS: true, version: 15),
+        macOSTrafficLightsArea,
+      );
+      expect(windowControlsOverSidebar(isMacOS: true, version: 10), Size.zero);
+      expect(windowControlsOverSidebar(isMacOS: false, version: 11), Size.zero);
+    });
+  });
+
+  group('windowControlsOverPage', () {
+    test('a wide macOS window meets the traffic lights at its top left', () {
+      expect(
+        windowControlsOverPage(isMacOS: true, version: 15, isMobileView: false),
+        macOSTrafficLightsArea,
+      );
+    });
+
+    test('a window header or a native title bar keeps them off the page', () {
+      for (final (isMacOS, version, isMobileView) in [
+        (true, 15, true),
+        (true, 10, false),
+        (false, 11, false),
+      ]) {
+        expect(
+          windowControlsOverPage(
+            isMacOS: isMacOS,
+            version: version,
+            isMobileView: isMobileView,
+          ),
+          Size.zero,
+          reason: 'macOS=$isMacOS $version mobileView=$isMobileView',
+        );
+      }
+    });
+  });
+
   group('getProxiesColumns', () {
     test('minimum 2 columns', () {
       expect(getProxiesColumns(100, ProxiesLayout.standard), 2);
@@ -167,18 +224,23 @@ void main() {
     });
 
     test('scales with width', () {
-      expect(getProfilesColumns(270), 1);
+      expect(getProfilesColumns(300), 1);
       expect(getProfilesColumns(700), 2);
-      expect(getProfilesColumns(1300), 4);
+      expect(getProfilesColumns(960), 3);
+    });
+
+    test('caps at three columns', () {
+      expect(getProfilesColumns(1300), 3);
+      expect(getProfilesColumns(2400, spacing: 14), 3);
     });
 
     test('spacing costs a column at the breakpoint', () {
-      expect(getProfilesColumns(540), 2);
-      expect(getProfilesColumns(540, spacing: 14), 1);
+      expect(getProfilesColumns(600), 2);
+      expect(getProfilesColumns(600, spacing: 14), 1);
     });
 
-    test('fits two padded cards near 600px', () {
-      expect(getProfilesColumns(568, spacing: 14), 2);
+    test('fits two padded cards, not three, near 900 dp', () {
+      expect(getProfilesColumns(868, spacing: 12), 2);
     });
 
     test('every card keeps at least the minimum width', () {

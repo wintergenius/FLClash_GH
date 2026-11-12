@@ -1,9 +1,13 @@
 package com.follow.clash.service.models
 
 import com.follow.clash.common.AccessControlMode
+import com.follow.clash.common.RussianPackageMatcher
+import com.google.gson.Gson
+import com.google.gson.JsonParser
 import java.net.Inet4Address
 import java.net.Inet6Address
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -140,5 +144,51 @@ class RouteAddressTest {
         assertThrows(IllegalArgumentException::class.java) {
             options.getIpv4RouteAddress()
         }
+    }
+}
+
+class TunOptionsTest {
+    @Test
+    fun `an unset mtu falls back to the core default`() {
+        assertEquals(1360, optionsWithRoutes(emptyList()).tunMtu)
+        assertEquals(1400, optionsWithRoutes(emptyList()).copy(mtu = 1400).tunMtu)
+    }
+
+    @Test
+    fun `hands the core the mtu the builder was given`() {
+        val options = optionsWithRoutes(emptyList()).copy(congestionController = "bbr")
+
+        val json = JsonParser.parseString(options.tunOptions).asJsonObject
+
+        assertEquals(1360, json["mtu"].asInt)
+        assertEquals("bbr", json["congestion-controller"].asString)
+    }
+
+    @Test
+    fun `a state saved before the options existed still encodes`() {
+        val options = optionsWithRoutes(emptyList()).copy(congestionController = null)
+
+        val json = JsonParser.parseString(options.tunOptions).asJsonObject
+
+        assertEquals("", json["congestion-controller"].asString)
+    }
+}
+
+class AccessControlPropsGsonTest {
+    @Test
+    fun `deserializes legacy AccessControlProps json without NPE`() {
+        val legacyJson = """{"enable":true,"mode":"REJECT_SELECTED","acceptList":[],"rejectList":["ru.sberbankmobile"]}"""
+        val parsed = Gson().fromJson(legacyJson, AccessControlProps::class.java)
+
+        assertTrue(parsed.enable)
+        assertFalse(parsed.autoRejectRussian)
+        val effective = RussianPackageMatcher.resolveEffectiveRejectSet(
+            explicitRejectList = parsed.rejectList,
+            autoDetectedRussian = listOf("ru.regional.bank"),
+            autoRejectExcludedList = parsed.autoRejectExcludedList,
+            autoRejectRussian = parsed.autoRejectRussian,
+            appPackageName = "com.follow.clash",
+        )
+        assertEquals(setOf("ru.sberbankmobile"), effective)
     }
 }

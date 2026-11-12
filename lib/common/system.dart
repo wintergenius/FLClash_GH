@@ -11,6 +11,7 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
+import 'package:prism_ui/banner.dart';
 
 typedef ProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
@@ -42,7 +43,15 @@ class System {
   bool get isTV => _isTV;
 
   Future<int> init() async {
-    final deviceInfo = await DeviceInfoPlugin().deviceInfo;
+    final BaseDeviceInfo deviceInfo;
+    try {
+      deviceInfo = await DeviceInfoPlugin().deviceInfo;
+    } on RangeError {
+      // device_info_plus turns the registry InstallDate into a DateTime, and
+      // some Windows installs store a value past DateTime's range.
+      if (isWindows) return 0;
+      rethrow;
+    }
     _isTV = switch (deviceInfo) {
       AndroidDeviceInfo(:final systemFeatures) => systemFeatures.any(
         const {
@@ -60,11 +69,6 @@ class System {
     };
   }
 
-  Future<bool> didCrashOnPreviousExecution() async {
-    if (!isAndroid) return false;
-    return await app?.didCrashOnPreviousExecution() ?? false;
-  }
-
   Future<AppExitInfo?> lastExitInfo() async {
     if (!isAndroid) return null;
     return app?.getLastExitInfo();
@@ -80,13 +84,49 @@ class System {
         : ['-c', '%U:%G %A', corePath];
   }
 
+  /// Execute for others fails it, so an older `+sx` Core is re-authorized.
   @visibleForTesting
   static bool isPrivilegedStatOutput(
     String output, {
     required String ownerPrefix,
   }) {
     final trimmed = output.trim();
-    return trimmed.startsWith(ownerPrefix) && trimmed.contains('rws');
+    if (!trimmed.startsWith(ownerPrefix)) {
+      return false;
+    }
+    final mode = trimmed.split(RegExp(r'\s+')).last;
+    return mode.length >= 10 &&
+        mode[3] == 's' &&
+        mode[9] != 'x' &&
+        mode[9] != 't';
+  }
+
+  @visibleForTesting
+  static String macOSElevationShell(String corePath) {
+    final path = _shellEscape(corePath);
+    return 'chown root:admin $path && chmod 4750 $path';
+  }
+
+  @visibleForTesting
+  static String linuxElevationShell(String corePath) {
+    final path = _shellEscape(corePath);
+    return 'group=\$(id -g "\${PKEXEC_UID:-\$SUDO_UID}") && '
+        'chown "root:\$group" $path && '
+        'chmod 4750 $path';
+  }
+
+  Future<bool> _isInAdminGroup() async {
+    try {
+      final result = await runProcess('id', ['-Gn']);
+      return result.exitCode == 0 &&
+          result.stdout
+              .toString()
+              .trim()
+              .split(RegExp(r'\s+'))
+              .contains('admin');
+    } on ProcessException {
+      return false;
+    }
   }
 
   /// A read-only nosuid mount at a path that changes every run: no elevation sticks.
@@ -194,8 +234,15 @@ class System {
     }
 
     if (system.isMacOS) {
-      final escapedPath = _shellEscape(appPath.corePath);
-      final shell = 'chown root:admin $escapedPath && chmod +sx $escapedPath';
+      if (!await _isInAdminGroup()) {
+        commonPrint.log(
+          'TUN needs an administrator account: only the admin group may run '
+          'the elevated Core',
+          logLevel: LogLevel.error,
+        );
+        return AuthorizeCode.error;
+      }
+      final shell = macOSElevationShell(appPath.corePath);
       final arguments = [
         '-e',
         'do shell script "$shell" with administrator privileges',
@@ -206,29 +253,12 @@ class System {
       }
       return AuthorizeCode.success;
     } else if (system.isLinux) {
-      final escapedCorePath = _shellEscape(appPath.corePath);
-      final ProcessResult result;
-      try {
-        result = await runProcess('pkexec', [
-          '/bin/sh',
-          '-c',
-          'chown root:root $escapedCorePath && chmod +sx $escapedCorePath',
-        ]);
-      } on ProcessException catch (error) {
-        commonPrint.log(
-          'pkexec is unavailable: ${compactError(error)}',
-          logLevel: LogLevel.error,
-        );
-        return AuthorizeCode.error;
-      }
-      if (result.exitCode != 0) {
-        commonPrint.log(
-          'pkexec refused to elevate the Core: ${result.exitCode}',
-          logLevel: LogLevel.error,
-        );
-        return AuthorizeCode.error;
-      }
-      return AuthorizeCode.success;
+      final elevated = await linuxElevation.elevate([
+        '/bin/sh',
+        '-c',
+        linuxElevationShell(appPath.corePath),
+      ]);
+      return elevated ? AuthorizeCode.success : AuthorizeCode.error;
     }
     return AuthorizeCode.error;
   }
@@ -248,6 +278,8 @@ final system = System();
 
 class Windows {
   static Windows? _instance;
+  static const _swHide = 0;
+  static const _swShowNormal = 1;
   late DynamicLibrary _shell32;
 
   Windows._internal() {
@@ -259,7 +291,7 @@ class Windows {
     return _instance!;
   }
 
-  bool runas(String command, String arguments) {
+  bool runas(String command, String arguments, {bool showWindow = true}) {
     final commandPtr = command.toNativeUtf16();
     final argumentsPtr = arguments.toNativeUtf16();
     final operationPtr = 'runas'.toNativeUtf16();
@@ -290,7 +322,7 @@ class Windows {
       commandPtr,
       argumentsPtr,
       nullptr,
-      1,
+      showWindow ? _swShowNormal : _swHide,
     );
 
     calloc.free(commandPtr);
@@ -308,9 +340,15 @@ class Windows {
     return true;
   }
 
+  /// The installer may be another administrator, so this process names the owner.
+  @visibleForTesting
+  static String installArguments(int ownerPid) =>
+      'install --owner-pid $ownerPid';
+
   Future<AuthorizeCode> registerService() {
     return registerHelperService(
-      () async => runas(appPath.helperPath, 'install'),
+      () async =>
+          runas(appPath.helperPath, installArguments(pid), showWindow: false),
     );
   }
 }
@@ -332,9 +370,9 @@ Future<AuthorizeCode> registerHelperService(
         'falling back to direct Core',
         logLevel: LogLevel.warning,
       );
-      dialogs.showNotifier(
+      dialogs.showBanner(
         currentAppLocalizations.helperCorruptTip,
-        level: MessageLevel.error,
+        level: BannerLevel.error,
       );
       return AuthorizeCode.error;
     case HelperReadiness.notReady:
@@ -363,12 +401,12 @@ Future<AuthorizeCode> registerHelperService(
   return isRunning ? AuthorizeCode.success : AuthorizeCode.error;
 }
 
-Future<bool> _waitForHelperService() async {
-  const timeout = Duration(seconds: 6);
+Future<bool> _waitForHelperService({
+  Duration timeout = const Duration(seconds: 6),
+}) async {
   const interval = Duration(seconds: 1);
-  const maxAttempts = 6;
   final stopwatch = Stopwatch()..start();
-  for (var attempt = 0; attempt < maxAttempts; attempt++) {
+  while (true) {
     final remaining = timeout - stopwatch.elapsed;
     if (remaining <= Duration.zero) return false;
     final isRunning =
@@ -376,19 +414,15 @@ Future<bool> _waitForHelperService() async {
         HelperReadiness.ready;
     if (isRunning) return true;
     final delay = timeout - stopwatch.elapsed;
-    if (delay <= Duration.zero || attempt == maxAttempts - 1) return false;
+    if (delay <= Duration.zero) return false;
     await Future.delayed(delay < interval ? delay : interval);
   }
-  return false;
 }
 
 final windows = system.isWindows ? Windows() : null;
 
 class Linux {
   static Linux? _instance;
-
-  @visibleForTesting
-  ProcessRunner runProcess = Process.run;
 
   Linux._internal();
 
@@ -397,35 +431,40 @@ class Linux {
     return _instance!;
   }
 
-  Future<AuthorizeCode> registerService() {
+  /// An autostarted session can beat systemd to starting the installed Helper.
+  Future<AuthorizeCode> registerService() async {
+    if (await _isHelperStillStarting()) {
+      commonPrint.log(
+        'waiting for the helper service to start with the system',
+      );
+      if (await _waitForHelperService(timeout: const Duration(seconds: 30))) {
+        commonPrint.log('helper service started with the system');
+        return AuthorizeCode.success;
+      }
+    }
     return registerHelperService(installService);
   }
 
-  /// pkexec raises the system polkit prompt and names the requesting user to
-  /// the installer, which is where the unit takes the account it grants the
-  /// Helper socket to.
-  @visibleForTesting
-  Future<bool> installService() async {
-    try {
-      final result = await runProcess('pkexec', [
-        appPath.helperPath,
-        'install',
-      ]);
-      if (result.exitCode == 0) {
-        return true;
-      }
-      commonPrint.log(
-        'pkexec helper install exited with ${result.exitCode}: '
-        '${result.stderr.toString().trim()}',
-        logLevel: LogLevel.error,
-      );
-    } catch (error) {
-      commonPrint.log(
-        'pkexec is unavailable: ${compactError(error)}',
-        logLevel: LogLevel.error,
-      );
+  Future<bool> _isHelperStillStarting() async {
+    if (!File(helperUnitPath).existsSync() ||
+        FileSystemEntity.typeSync(helperSocketPath) !=
+            FileSystemEntityType.notFound) {
+      return false;
     }
-    return false;
+    try {
+      final result = await Process.run('systemctl', ['is-system-running']);
+      final state = result.stdout.toString().trim();
+      return state == 'starting' || state == 'initializing';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// pkexec and sudo both name the requesting user to the installer, which is
+  /// where the unit takes the account it grants the Helper socket to.
+  @visibleForTesting
+  Future<bool> installService() {
+    return linuxElevation.elevate([appPath.helperPath, 'install']);
   }
 }
 

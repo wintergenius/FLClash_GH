@@ -5,31 +5,17 @@ import 'dart:typed_data';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
-class _FakePathProvider extends PathProviderPlatform {
-  final String root;
-
-  _FakePathProvider(this.root);
-
-  @override
-  Future<String?> getTemporaryPath() async => root;
-
-  @override
-  Future<String?> getApplicationSupportPath() async => root;
-
-  @override
-  Future<String?> getApplicationCachePath() async => root;
-}
+import '../helpers/app_paths.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory tempDir;
 
-  setUpAll(() {
+  setUpAll(() async {
     tempDir = Directory.systemTemp.createTempSync('profile_save_test');
-    PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
+    await useAppPaths(tempDir);
   });
 
   tearDownAll(() {
@@ -46,7 +32,7 @@ void main() {
       final bytes = Uint8List.fromList(utf8.encode('bad: ['));
 
       await expectLater(
-        profile.saveFile(bytes, validate: (_) async => 'invalid config'),
+        profile.saveFile(bytes, validate: (_, _) async => 'invalid config'),
         throwsA(
           isA<MessageException>().having(
             (e) => e.message,
@@ -64,11 +50,32 @@ void main() {
       final profile = Profile.normal(label: 'p');
       final bytes = Uint8List.fromList(utf8.encode('proxies: []'));
 
-      final saved = await profile.saveFile(bytes, validate: (_) async => '');
+      final saved = await profile.saveFile(
+        bytes,
+        validate: (_, _) async => null,
+      );
 
       expect(saved.lastUpdateDate, isNotNull);
       final savedFile = await profile.file;
       expect(await savedFile.readAsString(), 'proxies: []');
+    });
+
+    test('validates with the profile age key', () async {
+      final profile = Profile.normal(
+        label: 'p',
+      ).copyWith(ageSecretKey: 'AGE-SECRET-KEY-1A');
+      final bytes = Uint8List.fromList(utf8.encode('proxies: []'));
+      String? ageSecretKey;
+
+      await profile.saveFile(
+        bytes,
+        validate: (_, key) async {
+          ageSecretKey = key;
+          return null;
+        },
+      );
+
+      expect(ageSecretKey, 'AGE-SECRET-KEY-1A');
     });
   });
 }

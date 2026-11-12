@@ -10,11 +10,57 @@ class SystemAction extends _$SystemAction {
   void build() {}
 
   Future<List<Package>> getPackages() async {
-    if (ref.read(isMobileViewProvider)) {
-      await Future.delayed(commonDuration);
+    final packages = await app?.getPackages() ?? [];
+    if (!listEquals(packages, ref.read(packagesProvider))) {
+      ref.read(packagesProvider.notifier).value = packages;
     }
-    ref.read(packagesProvider.notifier).value = await app?.getPackages() ?? [];
     return ref.read(packagesProvider);
+  }
+
+  Future<List<String>> getChinaPackageNames() async {
+    return await app?.getChinaPackageNames() ?? [];
+  }
+
+  Future<List<String>> getRussianPackageNames() async {
+    return await app?.getRussianPackageNames() ?? [];
+  }
+
+  Future<void> syncAutoRejectedRussianPackages() async {
+    if (!system.isAndroid) {
+      return;
+    }
+    final accessControl = ref.read(vpnSettingProvider).accessControlProps;
+    if (!accessControl.enable ||
+        accessControl.mode != AccessControlMode.rejectSelected ||
+        !accessControl.autoRejectRussian) {
+      return;
+    }
+    final detected = await getRussianPackageNames();
+    if (!ref.mounted || detected.isEmpty) {
+      return;
+    }
+    final latest = ref.read(vpnSettingProvider).accessControlProps;
+    if (!latest.enable ||
+        latest.mode != AccessControlMode.rejectSelected ||
+        !latest.autoRejectRussian) {
+      return;
+    }
+    final existing = latest.rejectList.toSet();
+    final excluded = latest.autoRejectExcludedList.toSet();
+    final additions = [
+      for (final pkg in detected)
+        if (!existing.contains(pkg) && !excluded.contains(pkg)) pkg,
+    ];
+    if (additions.isEmpty) {
+      return;
+    }
+    final merged = [...latest.rejectList, ...additions]..sort();
+    ref.read(vpnSettingProvider.notifier).update(
+      (state) => state.copyWith(
+        accessControlProps: latest.copyWith(rejectList: merged),
+      ),
+    );
+    await _savePreferencesSafely();
   }
 
   Future<bool> isInstalledAppsPermissionGranted() async {
@@ -54,7 +100,7 @@ class SystemAction extends _$SystemAction {
       ?saveOperation,
       bootGuard.markClosed(),
       if (systemDnsCoordinator != null) systemDnsCoordinator!.shutdown(),
-      if (proxy != null) proxy!.stopProxy(),
+      ?systemProxyQueue?.close(),
     ]);
   }
 
@@ -132,6 +178,15 @@ class SystemAction extends _$SystemAction {
     ref
         .read(networkSettingProvider.notifier)
         .update((state) => state.copyWith(systemProxy: !state.systemProxy));
+  }
+
+  Future<void> copyProxyEnv() async {
+    final port = ref.read(
+      patchClashConfigProvider.select((state) => state.mixedPort),
+    );
+    await Clipboard.setData(
+      ClipboardData(text: proxyEnvCommand(port, isWindows: system.isWindows)),
+    );
   }
 
   void updateAutoLaunch() {

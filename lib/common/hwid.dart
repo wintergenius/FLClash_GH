@@ -193,15 +193,17 @@ class HwidManager {
 
   Future<({String seed, bool persisted})> _getOrCreateFallbackSeed() async {
     try {
-      final prefs = await preferences.sharedPreferencesCompleter.future
-          .timeout(const Duration(seconds: 1), onTimeout: () => null);
-      if (prefs != null) {
-        final existing = prefs.getString(_fallbackPrefKey)?.trim();
+      final isInit = await preferences.isInit.timeout(
+        const Duration(seconds: 1),
+        onTimeout: () => false,
+      );
+      if (isInit) {
+        final existing = (await preferences.getString(_fallbackPrefKey))?.trim();
         if (existing != null && existing.isNotEmpty) {
           return (seed: existing, persisted: true);
         }
         final generated = _generateRandomHex(16);
-        final saved = await prefs.setString(_fallbackPrefKey, generated);
+        final saved = await preferences.setString(_fallbackPrefKey, generated);
         return (seed: generated, persisted: saved);
       }
     } catch (_) {}

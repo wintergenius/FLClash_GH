@@ -2,34 +2,44 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/native.dart';
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/database/database.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/config.dart';
+import 'package:fl_clash/l10n/l10n.dart';
+import 'package:flutter/widgets.dart' show Locale;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart';
 import 'package:riverpod/riverpod.dart';
 
-class _StubbedArchiveBackupAction extends BackupAction {
-  _StubbedArchiveBackupAction(this.archivePath);
-
-  final String archivePath;
-
-  @override
-  Future<String> backup() async => archivePath;
-}
+import '../helpers/app_paths.dart';
+import '../helpers/preferences.dart';
 
 Profile _profile(int id, String label) => Profile(
   id: id,
   label: label,
   autoUpdateDuration: Duration.zero,
-  overwriteType: OverwriteType.standard,
+  extendType: ExtendType.standard,
 );
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Database testDatabase;
+  late Directory home;
+
+  setUpAll(() async {
+    await mockPreferences({'version': 1});
+    await AppLocalizations.load(const Locale('en'));
+    home = Directory.systemTemp.createTempSync('flclash-backup-action-');
+    await useAppPaths(home);
+  });
+
+  tearDownAll(() {
+    if (home.existsSync()) home.deleteSync(recursive: true);
+  });
 
   setUp(() {
     testDatabase = Database(NativeDatabase.memory());
@@ -40,8 +50,9 @@ void main() {
     await testDatabase.close();
   });
 
+  // AppStateManager's listen keeps the settings alive while a restore awaits.
   ProviderContainer buildContainer() {
-    final container = ProviderContainer();
+    final container = ProviderContainer()..listen(configProvider, (_, _) {});
     addTearDown(container.dispose);
     return container;
   }
@@ -53,54 +64,143 @@ void main() {
       jsonDecode(jsonEncode(container.read(configProvider).toJson()))
           as Map<String, Object?>;
 
-  group('consumeBackup owns the archive it produced', () {
-    File stubArchive() {
-      final directory = Directory.systemTemp.createTempSync('flclash_backup');
-      addTearDown(() => directory.deleteSync(recursive: true));
-      final file = File('${directory.path}/backup.zip')
-        ..writeAsBytesSync(const [80, 75, 5, 6]);
-      return file;
-    }
+  group('backup and restore round trip', () {
+    late Directory kept;
 
-    ProviderContainer containerFor(String archivePath) {
-      final container = ProviderContainer(
-        overrides: [
-          backupActionProvider.overrideWith(
-            () => _StubbedArchiveBackupAction(archivePath),
-          ),
-        ],
-      );
-      addTearDown(container.dispose);
-      return container;
-    }
-
-    test('deletes the archive once it has been sent', () async {
-      final archive = stubArchive();
-      final container = containerFor(archive.path);
-      String? sent;
-
-      final result = await actionOf(container).consumeBackup((path) async {
-        sent = path;
-        return true;
-      });
-
-      expect(result, isTrue);
-      expect(sent, archive.path);
-      expect(archive.existsSync(), isFalse);
+    setUp(() {
+      kept = Directory.systemTemp.createTempSync('flclash-backup-kept-');
+      addTearDown(() => kept.deleteSync(recursive: true));
     });
 
-    test('deletes the archive when sending it fails', () async {
-      final archive = stubArchive();
-      final container = containerFor(archive.path);
+    Set<String> workDirs() => home
+        .listSync()
+        .map((entity) => basename(entity.path))
+        .where((name) => name.startsWith('backup'))
+        .toSet();
+
+    Future<String> backupToKept(BackupAction action) async {
+      final keptPath = join(kept.path, 'kept.zip');
+      final delivered = await action.backup((archivePath) async {
+        File(archivePath).copySync(keptPath);
+        return true;
+      });
+      expect(delivered, isTrue);
+      return keptPath;
+    }
+
+    test('restores the rows, files and settings a backup carries', () async {
+      await testDatabase.profilesDao.putAll([
+        _profile(1, 'Backed up').toCompanion(0),
+      ]);
+      final profileFile = File(await appPath.getProfilePath('1'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('proxies: []');
+      final source = buildContainer();
+      source.read(excludeSSIDsProvider.notifier).value = ['home-wifi'];
+      final archivePath = await backupToKept(actionOf(source));
+
+      await testDatabase.delete(testDatabase.profiles).go();
+      profileFile.deleteSync();
+      final target = buildContainer();
+      final restored = await actionOf(
+        target,
+      ).restore(RestoreOption.all, (_) async => archivePath);
+
+      expect(restored, isTrue);
+      final stored = await testDatabase.profilesDao.query().get();
+      expect(stored.map((item) => item.label), ['Backed up']);
+      expect(profileFile.readAsStringSync(), 'proxies: []');
+      expect(target.read(excludeSSIDsProvider), ['home-wifi']);
+      expect(workDirs(), isEmpty);
+    });
+
+    test('brings back the attachments of local modules and cleans the '
+        'rest', () async {
+      final module = MitmModule(
+        id: 9,
+        name: 'Mine',
+        resources: const {'own.json': 'own.json'},
+        lastUpdateTime: DateTime(2026),
+      );
+      await testDatabase.mitmModulesDao.putAll([module.toCompanion()]);
+      File(join(home.path, 'mitm', 'modules', module.fileName))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('[Map Local]\n^https://a data="own.json"\n');
+      final resources = join(home.path, 'mitm', 'resources');
+      final own = File(join(resources, 'own.json'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('{}');
+      final archivePath = await backupToKept(actionOf(buildContainer()));
+
+      own.deleteSync();
+      final stale = File(join(resources, 'stale.json'))..writeAsStringSync('');
+      final target = buildContainer();
+      final restored = await actionOf(
+        target,
+      ).restore(RestoreOption.all, (_) async => archivePath);
+
+      expect(restored, isTrue);
+      expect(own.readAsStringSync(), '{}');
+      expect(stale.existsSync(), isFalse);
+    });
+
+    test('removes the work directory when delivery fails', () async {
+      final container = buildContainer();
 
       await expectLater(
         actionOf(
           container,
-        ).consumeBackup((_) async => throw const SocketException('offline')),
+        ).backup((_) async => throw const SocketException('offline')),
         throwsA(isA<SocketException>()),
       );
 
-      expect(archive.existsSync(), isFalse);
+      expect(workDirs(), isEmpty);
+    });
+
+    test('a cancelled fetch changes nothing', () async {
+      final container = buildContainer();
+
+      final restored = await actionOf(
+        container,
+      ).restore(RestoreOption.all, (_) async => null);
+
+      expect(restored, isFalse);
+    });
+
+    test('an unreadable archive is reported and changes nothing', () async {
+      await testDatabase.profilesDao.putAll([
+        _profile(9, 'Pre-existing').toCompanion(0),
+      ]);
+      final bogus = File(join(kept.path, 'bogus.zip'))
+        ..writeAsStringSync('not a zip');
+      final container = buildContainer();
+
+      await expectLater(
+        actionOf(container).restore(RestoreOption.all, (_) async => bogus.path),
+        throwsA(
+          isA<MessageException>().having(
+            (error) => error.message,
+            'message',
+            currentAppLocalizations.invalidBackupFile,
+          ),
+        ),
+      );
+
+      final stored = await testDatabase.profilesDao.query().get();
+      expect(stored.map((item) => item.label), ['Pre-existing']);
+      expect(workDirs(), isEmpty);
+    });
+
+    test('removes the staging an earlier version left behind', () async {
+      final legacyArchive = File(join(home.path, 'backup.zip'))
+        ..writeAsStringSync('stale');
+      final legacyStaging = Directory(join(home.path, 'restore'))..createSync();
+      final container = buildContainer();
+
+      await actionOf(container).restore(RestoreOption.all, (_) async => null);
+
+      expect(legacyArchive.existsSync(), isFalse);
+      expect(legacyStaging.existsSync(), isFalse);
     });
   });
 
@@ -162,7 +262,81 @@ void main() {
       });
     });
 
+    test('a restore drops the cache of a provider it replaced', () async {
+      const dropped = ClashProvider(
+        id: 5,
+        label: 'Dropped',
+        url: 'https://example.com/dropped.yaml',
+      );
+      const kept = ClashProvider(id: 6, label: 'Kept');
+      await testDatabase.clashProvidersDao.putAll(
+        [dropped, kept].map((item) => item.toCompanion()),
+      );
+      for (final path in [
+        await dropped.path,
+        await dropped.compiledPath,
+        await kept.path,
+        await kept.compiledPath,
+      ]) {
+        File(path).createSync(recursive: true);
+      }
+      final container = buildContainer();
+      container
+          .read(appSettingProvider.notifier)
+          .update(
+            (state) =>
+                state.copyWith(restoreStrategy: RestoreStrategy.override),
+          );
+
+      await actionOf(container).applyRestore(
+        const MigrationData(clashProviders: [kept]),
+        RestoreOption.onlyProfiles,
+      );
+
+      expect(File(await dropped.path).existsSync(), isFalse);
+      expect(File(await dropped.compiledPath).existsSync(), isFalse);
+      expect(File(await kept.path).existsSync(), isTrue);
+      expect(
+        File(await kept.compiledPath).existsSync(),
+        isFalse,
+        reason: 'the restored source is compiled again on first use',
+      );
+    });
+
+    test('rows that fail to restore take their files back out', () async {
+      final replaced = File(await appPath.getProfilePath('41'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('current');
+      final added = File(await appPath.getProfilePath('42'));
+      final staging = Directory.systemTemp.createTempSync('flclash-staging-');
+      addTearDown(() => staging.deleteSync(recursive: true));
+      for (final id in [41, 42]) {
+        File(BackupEntries.resolve(staging.path, BackupEntries.profile(id)))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('from backup');
+      }
+      await testDatabase.customStatement(
+        'CREATE TRIGGER refuse_profiles BEFORE INSERT ON profiles '
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END",
+      );
+
+      await expectLater(
+        actionOf(buildContainer()).applyRestore(
+          MigrationData(profiles: [_profile(41, 'One'), _profile(42, 'Two')]),
+          RestoreOption.onlyProfiles,
+          stagingDirPath: staging.path,
+        ),
+        throwsA(anything),
+      );
+
+      expect(replaced.readAsStringSync(), 'current');
+      expect(added.existsSync(), isFalse);
+    });
+
     test('a backup carrying only proxy groups still writes them', () async {
+      await testDatabase.profiles.put(
+        const Profile(id: 7, autoUpdateDuration: Duration.zero).toCompanion(),
+      );
       final container = buildContainer();
 
       await actionOf(container).applyRestore(
@@ -200,7 +374,6 @@ void main() {
       source
           .read(patchClashConfigProvider.notifier)
           .update((state) => state.copyWith(mixedPort: 7899));
-      source.read(overrideDnsProvider.notifier).value = true;
       final configMap = configMapOf(source);
 
       final target = buildContainer();
@@ -211,7 +384,66 @@ void main() {
       expect(target.read(currentProfileIdProvider), 42);
       expect(target.read(appSettingProvider).autoLaunch, isTrue);
       expect(target.read(patchClashConfigProvider).mixedPort, 7899);
-      expect(target.read(overrideDnsProvider), isTrue);
+    });
+
+    test('keeps the bound WebDAV account when the backup has none', () async {
+      final configMap = configMapOf(buildContainer());
+      const dav = DAVProps(uri: 'https://dav.example', user: 'me');
+      final target = buildContainer();
+      target.read(davSettingProvider.notifier).value = dav;
+
+      await actionOf(
+        target,
+      ).applyRestore(MigrationData(configMap: configMap), RestoreOption.all);
+
+      expect(target.read(davSettingProvider), dav);
+    });
+
+    test('keeps the picked apps when the backup lists none', () async {
+      final configMap = configMapOf(buildContainer());
+      const picked = AccessControlProps(
+        enable: true,
+        mode: AccessControlMode.acceptSelected,
+        acceptList: ['com.example.browser'],
+      );
+      final target = buildContainer();
+      target
+          .read(vpnSettingProvider.notifier)
+          .update((state) => state.copyWith(accessControlProps: picked));
+
+      await actionOf(
+        target,
+      ).applyRestore(MigrationData(configMap: configMap), RestoreOption.all);
+
+      expect(target.read(vpnSettingProvider).accessControlProps, picked);
+    });
+
+    test('takes the apps a backup lists from another phone', () async {
+      const listed = AccessControlProps(
+        enable: true,
+        rejectList: ['com.example.bank'],
+      );
+      final source = buildContainer();
+      source
+          .read(vpnSettingProvider.notifier)
+          .update((state) => state.copyWith(accessControlProps: listed));
+      final configMap = configMapOf(source);
+      final target = buildContainer();
+      target
+          .read(vpnSettingProvider.notifier)
+          .update(
+            (state) => state.copyWith(
+              accessControlProps: const AccessControlProps(
+                acceptList: ['com.example.browser'],
+              ),
+            ),
+          );
+
+      await actionOf(
+        target,
+      ).applyRestore(MigrationData(configMap: configMap), RestoreOption.all);
+
+      expect(target.read(vpnSettingProvider).accessControlProps, listed);
     });
 
     test('leaves the settings untouched for an onlyProfiles restore', () async {
@@ -245,12 +477,13 @@ void main() {
     });
   });
 
-  group('a malformed config aborts before the database is touched', () {
-    test('leaves the existing profiles in place', () async {
+  group('a config with unreadable values', () {
+    test('restores the rest without keeping a dropped profile', () async {
       final container = buildContainer();
       await testDatabase.profilesDao.putAll([
         _profile(9, 'Pre-existing').toCompanion(0),
       ]);
+      container.read(currentProfileIdProvider.notifier).value = 9;
       container
           .read(appSettingProvider.notifier)
           .update(
@@ -258,27 +491,21 @@ void main() {
                 state.copyWith(restoreStrategy: RestoreStrategy.override),
           );
 
-      await expectLater(
-        actionOf(container).applyRestore(
-          MigrationData(
-            configMap: const {'currentProfileId': 'not an int'},
-            profiles: [_profile(1, 'From backup')],
-          ),
-          RestoreOption.all,
+      await actionOf(container).applyRestore(
+        MigrationData(
+          configMap: const {
+            'currentProfileId': 'not an int',
+            'appSettingProps': {'hideIp': true},
+          },
+          profiles: [_profile(1, 'From backup')],
         ),
-        throwsA(isA<TypeError>()),
+        RestoreOption.all,
       );
 
       final stored = await testDatabase.profilesDao.query().get();
-      expect(
-        stored.map((item) => item.label),
-        ['Pre-existing'],
-        reason:
-            'an override restore deletes every profile the backup omits, so a '
-            'config that cannot be parsed must abort before the batch runs; '
-            'otherwise the profiles are replaced and currentProfileId still '
-            'points at a row that was just deleted',
-      );
+      expect(stored.map((item) => item.label), ['From backup']);
+      expect(container.read(currentProfileIdProvider), isNull);
+      expect(container.read(appSettingProvider).hideIp, true);
     });
   });
 }

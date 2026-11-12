@@ -16,23 +16,18 @@ List<Group> computeSort({
     required Map<String, String> selectedMap,
     required String testUrl,
   }) {
-    return List.from(proxies)..sort((a, b) {
-      final aDelayState = computeProxyDelayState(
-        proxyName: a.name,
-        testUrl: testUrl,
-        groups: groups,
-        selectedMap: selectedMap,
-        delayMap: delayMap,
-      );
-      final bDelayState = computeProxyDelayState(
-        proxyName: b.name,
-        testUrl: testUrl,
-        groups: groups,
-        selectedMap: selectedMap,
-        delayMap: delayMap,
-      );
-      return aDelayState.compareTo(bDelayState);
-    });
+    final delayStates = {
+      for (final proxy in proxies)
+        proxy.name: computeProxyDelayState(
+          proxyName: proxy.name,
+          testUrl: testUrl,
+          groups: groups,
+          selectedMap: selectedMap,
+          delayMap: delayMap,
+        ),
+    };
+    return List.of(proxies)
+      ..sort((a, b) => delayStates[a.name]!.compareTo(delayStates[b.name]!));
   }
 
   List<Proxy> sortOfName(List<Proxy> proxies) {
@@ -56,16 +51,70 @@ List<Group> computeSort({
   }).toList();
 }
 
+/// Built-in adapters whose delay probe always fails, so a timeout says nothing.
+const _unprobeableProxyTypes = {
+  'Reject',
+  'RejectDrop',
+  'Pass',
+  'PassRule',
+  'Rematch',
+  'Compatible',
+  'Dns',
+};
+
+List<Group> computeHideTimeout({
+  required List<Group> groups,
+  required List<Group> allGroups,
+  required DelayMap delayMap,
+  required Map<String, String> selectedMap,
+  required String defaultTestUrl,
+}) {
+  final realStates = <String, SelectedProxyState>{};
+  final proxyTypes = {
+    for (final group in allGroups)
+      for (final proxy in group.all) proxy.name: proxy.type,
+  };
+  return groups.map((group) {
+    final groupTestUrl = group.testUrl.takeFirstValid([defaultTestUrl]);
+    final groupWithNow = allGroups.getGroup(group.name) ?? group;
+    final selectedName = groupWithNow.getCurrentSelectedName(
+      selectedMap[group.name] ?? '',
+    );
+    final visible = group.all.where((proxy) {
+      // A group's delay is its pick's, and hiding it would take away the only
+      // way to choose the group where the mode does not show it on its own.
+      if (proxy.name == selectedName ||
+          allGroups.getGroup(proxy.name) != null) {
+        return true;
+      }
+      final state = realStates.putIfAbsent(
+        proxy.name,
+        () => computeRealSelectedProxyState(
+          proxy.name,
+          groups: allGroups,
+          selectedMap: selectedMap,
+        ),
+      );
+      if (_unprobeableProxyTypes.contains(proxyTypes[state.proxyName])) {
+        return true;
+      }
+      final testUrl = state.testUrl.takeFirstValid([groupTestUrl]);
+      final delay = delayMap[testUrl]?[state.proxyName];
+      return delay == null || delay > 0;
+    }).toList();
+    return group.copyWith(all: visible.isEmpty ? group.all : visible);
+  }).toList();
+}
+
 SelectedProxyState getRealSelectedProxyState(
   SelectedProxyState state, {
   required List<Group> groups,
   required Map<String, String> selectedMap,
 }) {
   if (state.proxyName.isEmpty) return state;
-  final index = groups.indexWhere((element) => element.name == state.proxyName);
+  final group = groups.getGroup(state.proxyName);
   final newState = state.copyWith(group: true);
-  if (index == -1) return newState;
-  final group = groups[index];
+  if (group == null) return newState;
   final currentSelectedName = group.getCurrentSelectedName(
     selectedMap[newState.proxyName] ?? '',
   );

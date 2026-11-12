@@ -1,26 +1,97 @@
-import 'package:dio/dio.dart';
+import 'package:fl_clash/common/constant.dart';
+import 'package:fl_clash/common/exception.dart';
+import 'package:fl_clash/common/network_error.dart';
 import 'package:fl_clash/core/desktop/launch_policy.dart';
 import 'package:fl_clash/core/method.dart';
 import 'package:fl_clash/l10n/l10n.dart';
-
-import 'dart:ui';
+import 'package:flutter/widgets.dart';
+import 'package:prism_ui/l10n.dart';
 
 final currentAppLocalizations = AppLocalizations.current;
 
-String? networkErrorMessage(Object error, AppLocalizations appLocalizations) {
-  if (error case CoreMethodException(:final code)) {
-    return switch (code) {
-      'request_bad_response' => appLocalizations.networkException,
-      'request_error' => appLocalizations.unknownNetworkError,
-      _ => null,
-    };
-  }
-  if (error is DioException) {
-    return error.type == DioExceptionType.badResponse
-        ? appLocalizations.networkException
-        : appLocalizations.unknownNetworkError;
-  }
-  return null;
+class AppUiLocalizations implements UiLocalizations {
+  const AppUiLocalizations(this._localizations);
+
+  static const LocalizationsDelegate<UiLocalizations> delegate =
+      _AppUiLocalizationsDelegate();
+
+  final AppLocalizations _localizations;
+
+  @override
+  String get back => _localizations.back;
+
+  @override
+  String get cancel => _localizations.cancel;
+
+  @override
+  String get clearSearch => _localizations.clearSearch;
+
+  @override
+  String get close => _localizations.close;
+
+  @override
+  String get copy => _localizations.copy;
+
+  @override
+  String get cut => _localizations.cut;
+
+  @override
+  String get hidePassword => _localizations.hidePassword;
+
+  @override
+  String get dialog => _localizations.dialog;
+
+  @override
+  String get more => _localizations.more;
+
+  @override
+  String get noSearchResults => _localizations.noSearchResults;
+
+  @override
+  String get paste => _localizations.paste;
+
+  @override
+  String get reset => _localizations.reset;
+
+  @override
+  String get search => _localizations.search;
+
+  @override
+  String get select => _localizations.select;
+
+  @override
+  String get selectAll => _localizations.selectAll;
+
+  @override
+  String get showLess => _localizations.showLess;
+
+  @override
+  String get showMore => _localizations.showMore;
+
+  @override
+  String get showPassword => _localizations.showPassword;
+
+  @override
+  String get sort => _localizations.sort;
+
+  @override
+  String get submit => _localizations.submit;
+}
+
+class _AppUiLocalizationsDelegate
+    extends LocalizationsDelegate<UiLocalizations> {
+  const _AppUiLocalizationsDelegate();
+
+  @override
+  bool isSupported(Locale locale) =>
+      AppLocalizations.delegate.isSupported(locale);
+
+  @override
+  Future<UiLocalizations> load(Locale locale) =>
+      AppLocalizations.load(locale).then(AppUiLocalizations.new);
+
+  @override
+  bool shouldReload(_AppUiLocalizationsDelegate old) => false;
 }
 
 String? coreLaunchBlockedMessage(
@@ -41,9 +112,25 @@ String userFacingErrorMessage(Object error, AppLocalizations appLocalizations) {
   return networkErrorMessage(error, appLocalizations) ??
       coreLaunchBlockedMessage(error, appLocalizations) ??
       switch (error) {
+        AgeSecretKeyRequiredException() =>
+          appLocalizations.ageSecretKeyRequiredTip,
+        ReleaseNotVerifiedException() => appLocalizations.updateNotVerified,
+        SystemDownloadException() => appLocalizations.updateDownloadFailed,
+        CoreMethodException(code: 'rule_set_empty') =>
+          appLocalizations.ruleSetEmptyTip,
+        CoreMethodException(code: 'rule_set_mixed') =>
+          appLocalizations.ruleSetMixedTip,
+        CoreMethodException(code: 'rule_set_invalid') =>
+          appLocalizations.ruleSetInvalidTip,
         CoreMethodException(:final message) => message,
         _ => error.toString(),
       };
+}
+
+String delayFailureText(int delay, AppLocalizations appLocalizations) {
+  return delay == delayTimedOutValue
+      ? appLocalizations.timeout
+      : appLocalizations.delayFailed;
 }
 
 Locale? getLocaleForString(String? localString) {

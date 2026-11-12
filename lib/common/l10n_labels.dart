@@ -1,5 +1,6 @@
 import 'package:fl_clash/enum/enum.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
+import 'package:prism_ui/color.dart';
 
 import 'app_localizations.dart';
 
@@ -14,21 +15,20 @@ extension PageLabelL10n on PageLabel {
       PageLabel.logs => appLocalizations.logs,
       PageLabel.requests => appLocalizations.requests,
       PageLabel.resources => appLocalizations.resources,
-      PageLabel.connections => appLocalizations.connections,
+      PageLabel.dns => appLocalizations.dnsQueries,
     };
   }
+}
 
-  String? get description {
+extension DnsQueryInitiatorL10n on DnsQueryInitiator {
+  String get label {
     final appLocalizations = currentAppLocalizations;
     return switch (this) {
-      PageLabel.logs => appLocalizations.logsDesc,
-      PageLabel.requests => appLocalizations.requestsDesc,
-      PageLabel.resources => appLocalizations.resourcesDesc,
-      PageLabel.connections => appLocalizations.connectionsDesc,
-      PageLabel.dashboard ||
-      PageLabel.proxies ||
-      PageLabel.profiles ||
-      PageLabel.tools => null,
+      DnsQueryInitiator.app => appLocalizations.app,
+      DnsQueryInitiator.rule => appLocalizations.rule,
+      DnsQueryInitiator.direct => appLocalizations.direct,
+      DnsQueryInitiator.proxy => appLocalizations.proxies,
+      DnsQueryInitiator.other => appLocalizations.other,
     };
   }
 }
@@ -58,9 +58,9 @@ extension ProxyCardTypeL10n on ProxyCardType {
   String get label {
     final appLocalizations = currentAppLocalizations;
     return switch (this) {
-      ProxyCardType.expand => appLocalizations.expand,
-      ProxyCardType.shrink => appLocalizations.shrink,
-      ProxyCardType.min => appLocalizations.min,
+      ProxyCardType.loose => appLocalizations.loose,
+      ProxyCardType.standard => appLocalizations.standard,
+      ProxyCardType.compact => appLocalizations.compact,
     };
   }
 }
@@ -74,16 +74,27 @@ extension HotActionL10n on HotAction {
       HotAction.mode => appLocalizations.actionMode,
       HotAction.proxy => appLocalizations.actionProxy,
       HotAction.tun => appLocalizations.actionTun,
+      HotAction.ruleMode => appLocalizations.actionRuleMode,
+      HotAction.globalMode => appLocalizations.actionGlobalMode,
+      HotAction.directMode => appLocalizations.actionDirectMode,
+      HotAction.delayTest => appLocalizations.actionDelayTest,
+      HotAction.updateProfiles => appLocalizations.actionUpdateProfiles,
+      HotAction.copyEnv => appLocalizations.copyEnvVar,
+      HotAction.exit => appLocalizations.exit,
     };
   }
 }
 
-extension RouteModeL10n on RouteMode {
+extension MitmListL10n on MitmList {
   String get label {
     final appLocalizations = currentAppLocalizations;
     return switch (this) {
-      RouteMode.bypassPrivate => appLocalizations.routeModeBypassPrivate,
-      RouteMode.config => appLocalizations.routeModeConfig,
+      MitmList.hostname => appLocalizations.hostname,
+      MitmList.urlRewrite => appLocalizations.urlRewrite,
+      MitmList.headerRewrite => appLocalizations.headerRewrite,
+      MitmList.bodyRewrite => appLocalizations.bodyRewrite,
+      MitmList.mapLocal => appLocalizations.mapLocal,
+      MitmList.script => appLocalizations.script,
     };
   }
 }
@@ -98,19 +109,14 @@ extension RestoreStrategyL10n on RestoreStrategy {
   }
 }
 
-extension DynamicSchemeVariantL10n on DynamicSchemeVariant {
+extension ColorStyleL10n on ColorStyle {
   String get label {
     final appLocalizations = currentAppLocalizations;
     return switch (this) {
-      DynamicSchemeVariant.tonalSpot => appLocalizations.tonalSpotScheme,
-      DynamicSchemeVariant.fidelity => appLocalizations.fidelityScheme,
-      DynamicSchemeVariant.monochrome => appLocalizations.monochromeScheme,
-      DynamicSchemeVariant.neutral => appLocalizations.neutralScheme,
-      DynamicSchemeVariant.vibrant => appLocalizations.vibrantScheme,
-      DynamicSchemeVariant.expressive => appLocalizations.expressiveScheme,
-      DynamicSchemeVariant.content => appLocalizations.contentScheme,
-      DynamicSchemeVariant.rainbow => appLocalizations.rainbowScheme,
-      DynamicSchemeVariant.fruitSalad => appLocalizations.fruitSaladScheme,
+      ColorStyle.vivid => appLocalizations.vividStyle,
+      ColorStyle.tinted => appLocalizations.tintedStyle,
+      ColorStyle.soft => appLocalizations.softStyle,
+      ColorStyle.monochrome => appLocalizations.monochromeScheme,
     };
   }
 }
@@ -120,10 +126,43 @@ extension LocaleL10n on Locale {
     final appLocalizations = currentAppLocalizations;
     return switch (toString()) {
       'en' => appLocalizations.en,
+      'es' => appLocalizations.es,
+      'fr' => appLocalizations.fr,
       'ja' => appLocalizations.ja,
+      'ko' => appLocalizations.ko,
       'ru' => appLocalizations.ru,
       'zh_CN' => appLocalizations.zhCN,
       final code => code,
+    };
+  }
+}
+
+extension RecordFacetKindL10n on RecordFacetKind {
+  String? get title {
+    final appLocalizations = currentAppLocalizations;
+    return switch (this) {
+      RecordFacetKind.network => appLocalizations.protocol,
+      RecordFacetKind.rule => appLocalizations.rule,
+      RecordFacetKind.level => appLocalizations.logLevel,
+      RecordFacetKind.mitm ||
+      RecordFacetKind.app ||
+      RecordFacetKind.proxy ||
+      RecordFacetKind.type ||
+      RecordFacetKind.initiator ||
+      RecordFacetKind.cache ||
+      RecordFacetKind.rcode => null,
+    };
+  }
+}
+
+extension RecordGroupingL10n on RecordGrouping {
+  String get label {
+    final appLocalizations = currentAppLocalizations;
+    return switch (this) {
+      RecordGrouping.app => appLocalizations.app,
+      RecordGrouping.host => appLocalizations.host,
+      RecordGrouping.rule => appLocalizations.rule,
+      RecordGrouping.exit => appLocalizations.outboundExit,
     };
   }
 }

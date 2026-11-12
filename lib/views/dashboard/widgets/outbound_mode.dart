@@ -1,216 +1,173 @@
-import 'dart:math';
-
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/state.dart';
-import 'package:fl_clash/widgets/widgets.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/ui/ui.dart';
+import 'package:fl_clash/views/dashboard/layout.dart';
+import 'package:fl_clash/views/dashboard/style.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/widgets.dart';
 
-class OutboundMode extends ConsumerWidget {
-  const OutboundMode({super.key});
+import 'card.dart';
 
-  void _handleChangeMode(Mode mode, WidgetRef ref) {
-    ref.read(setupActionProvider.notifier).changeMode(mode);
-  }
+Glyph _glyphOf(Mode mode) => switch (mode) {
+  Mode.rule => AppGlyphs.rules,
+  Mode.global => AppGlyphs.proxies,
+  Mode.direct => AppGlyphs.target,
+};
+
+void _changeMode(WidgetRef ref, Mode mode) {
+  if (ref.read(patchClashConfigProvider).mode == mode) return;
+  ref.read(setupActionProvider.notifier).changeMode(mode);
+}
+
+class OutboundModeCard extends ConsumerWidget {
+  const OutboundModeCard({super.key});
+
+  static const _outer = 26.0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final appLocalizations = context.appLocalizations;
-    final height = getWidgetHeight(2);
-    return SizedBox(
-      height: height,
-      child: Consumer(
-        builder: (_, ref, _) {
-          final mode = ref.watch(
-            patchClashConfigProvider.select((state) => state.mode),
-          );
-          return Theme(
-            data: Theme.of(context).copyWith(
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-              hoverColor: Colors.transparent,
-            ),
-            child: CommonCard(
-              radius: AppCorner.lg,
-              onPressed: () {},
-              skipTraversal: true,
-              info: Info(
-                label: appLocalizations.outboundMode,
-                iconData: Icons.call_split_sharp,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.only(top: 12, bottom: 12),
-                child: RadioGroup<Mode>(
-                  groupValue: mode,
-                  onChanged: (value) {
-                    if (value == null) {
-                      return;
-                    }
-                    _handleChangeMode(value, ref);
-                  },
-                  child: _ModeRadioList(
-                    onSelect: (item) {
-                      _handleChangeMode(item, ref);
-                    },
+    final mode = ref.watch(
+      patchClashConfigProvider.select((state) => state.mode),
+    );
+    final tone = DashboardColors.of(context).tone;
+    final style = AppTextStyle.footnote.of(context, emphasized: true);
+    return DashboardCard(
+      semanticLabel: context.appLocalizations.outboundMode,
+      child: Column(
+        children: [
+          DashboardCardHeader(
+            glyph: AppGlyphs.split,
+            title: context.appLocalizations.outboundMode,
+          ),
+          const SizedBox(height: 12),
+          DashboardConnectedGroup(
+            children: [
+              for (final (index, item) in Mode.values.indexed)
+                Expanded(
+                  child: DashboardConnectedButton(
+                    selected: item == mode,
+                    first: index == 0,
+                    last: index == Mode.values.length - 1,
+                    outer: _outer,
+                    inner: 12,
+                    background: tone,
+                    semanticLabel: item.label,
+                    onTap: () => _changeMode(ref, item),
+                    builder: (foreground) => SizedBox(
+                      height: 52,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        spacing: 2,
+                        children: [
+                          GlyphIcon(
+                            _glyphOf(item),
+                            size: 18,
+                            color: foreground,
+                          ),
+                          Text(
+                            item.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: style.copyWith(color: foreground),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-          );
-        },
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _ModeRadioList extends StatelessWidget {
-  const _ModeRadioList({required this.onSelect});
+/// The desktop control row's mode switch; its buttons sit as far in from the
+/// card's ends as from its edges so their corners stay concentric.
+class OutboundModeBar extends ConsumerWidget {
+  const OutboundModeBar({super.key});
 
-  final void Function(Mode mode) onSelect;
+  static const _inset = 8.0;
 
   @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (_, constraints) {
-        final minTileHeight = min(
-          constraints.maxHeight / 3,
-          globalState.measure.bodyMediumHeight + 16,
-        );
-        return Column(
-          mainAxisSize: MainAxisSize.max,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.start,
-          children: [
-            for (final item in Mode.values)
-              ListItem.radio(
-                horizontalTitleGap: 8,
-                tileTitleAlignment: ListTileTitleAlignment.center,
-                minTileHeight: minTileHeight,
-                minVerticalPadding: 0,
-                padding: EdgeInsets.only(left: 12.ap, right: 16.ap),
-                onTap: () {
-                  onSelect(item);
-                },
-                value: item,
-                title: Text(
-                  item.label,
-                  style: Theme.of(context).textTheme.bodyMedium?.toSoftBold,
-                ),
-              ),
-          ],
-        );
-      },
+  Widget build(BuildContext context, WidgetRef ref) {
+    final density = DashboardDensityScope.of(context);
+    final mode = ref.watch(
+      patchClashConfigProvider.select((state) => state.mode),
     );
-  }
-}
-
-class OutboundModeV2 extends StatelessWidget {
-  const OutboundModeV2({super.key});
-
-  void _handleChangeMode(Mode mode, WidgetRef ref) {
-    ref.read(setupActionProvider.notifier).changeMode(mode);
-  }
-
-  Color _getTextColor(BuildContext context, Mode mode) {
-    return switch (mode) {
-      Mode.rule => context.colorScheme.onSecondaryContainer,
-      Mode.global => context.colorScheme.onPrimaryContainer,
-      Mode.direct => context.colorScheme.onTertiaryContainer,
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final height = getWidgetHeight(1);
-    return SizedBox(
-      height: height,
-      child: CommonCard(
-        radius: AppCorner.lg,
-        child: Consumer(
-          builder: (_, ref, _) {
-            final mode = ref.watch(
-              patchClashConfigProvider.select((state) => state.mode),
-            );
-            final thumbColor = switch (mode) {
-              Mode.rule => context.colorScheme.secondaryContainer,
-              Mode.global => globalState.theme.darken3PrimaryContainer,
-              Mode.direct => context.colorScheme.tertiaryContainer,
-            };
-            return LayoutBuilder(
-              builder: (_, constraints) {
-                return Column(
-                  mainAxisSize: MainAxisSize.max,
-                  children: [
+    final appLocalizations = context.appLocalizations;
+    final outer = dashboardCardRadius(density) - _inset;
+    final style = AppTextStyle.subheadline.of(context, emphasized: true);
+    return DashboardCard(
+      semanticLabel: appLocalizations.outboundMode,
+      padding: EdgeInsetsDirectional.fromSTEB(
+        dashboardCardPadding(density).left,
+        _inset,
+        _inset,
+        _inset,
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) => Row(
+          spacing: 16,
+          children: [
+            GlyphIcon(
+              AppGlyphs.split,
+              size: 18,
+              color: context.colorScheme.onSurfaceVariant,
+            ),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: constraints.maxWidth / 4),
+              child: Text(
+                appLocalizations.outboundMode,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DashboardText.cardTitle(context),
+              ),
+            ),
+            Expanded(
+              child: DashboardConnectedGroup(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final (index, item) in Mode.values.indexed)
                     Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        constraints: const BoxConstraints.expand(),
-                        child: CommonTabBar<Mode>(
-                          children: {
-                            for (final item in Mode.values)
-                              item: _ModeTab(
-                                label: item.label,
-                                height: height - 8.ap - 24,
-                                color: item == mode
-                                    ? _getTextColor(context, item)
-                                    : null,
+                      child: DashboardConnectedButton(
+                        selected: item == mode,
+                        first: index == 0,
+                        last: index == Mode.values.length - 1,
+                        outer: outer,
+                        inner: 10,
+                        background: DashboardColors.of(context).tone,
+                        semanticLabel: item.label,
+                        onTap: () => _changeMode(ref, item),
+                        builder: (foreground) => Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          spacing: 6,
+                          children: [
+                            GlyphIcon(
+                              _glyphOf(item),
+                              size: 18,
+                              color: foreground,
+                            ),
+                            Flexible(
+                              child: Text(
+                                item.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: style.copyWith(color: foreground),
                               ),
-                          },
-                          padding: const EdgeInsets.symmetric(horizontal: 0),
-                          groupValue: mode,
-                          onValueChanged: (value) {
-                            if (value == null) {
-                              return;
-                            }
-                            _handleChangeMode(value, ref);
-                          },
-                          thumbColor: thumbColor,
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    Container(
-                      color: thumbColor.opacity50,
-                      height: 8.ap,
-                      width: constraints.maxWidth,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                    ),
-                  ],
-                );
-              },
-            );
-          },
+                ],
+              ),
+            ),
+          ],
         ),
-      ),
-    );
-  }
-}
-
-class _ModeTab extends StatelessWidget {
-  const _ModeTab({
-    required this.label,
-    required this.height,
-    required this.color,
-  });
-
-  final String label;
-  final double height;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      clipBehavior: Clip.antiAlias,
-      alignment: Alignment.center,
-      decoration: const BoxDecoration(),
-      height: height,
-      padding: const EdgeInsets.all(4),
-      child: Text(
-        label,
-        style: Theme.of(
-          context,
-        ).textTheme.titleSmall?.adjustSize(1).copyWith(color: color),
       ),
     );
   }

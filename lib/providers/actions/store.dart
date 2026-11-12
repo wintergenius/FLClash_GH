@@ -8,12 +8,24 @@ class StoreAction extends _$StoreAction {
   void build() {}
 
   Future<void> shakingStore() async {
-    final profileIds = ref.read(profilesProvider).map((item) => item.id);
+    // The lists leave out rows they cannot read, whose files must survive, and
+    // the tables may not hold an optimistic write yet.
+    final profileIds = {
+      ...ref.read(profilesProvider).map((item) => item.id),
+      ...await database.profilesDao.ids().get(),
+    };
     final scripts = await ref.read(scriptsProvider.future);
-    final scriptIds = scripts.map((item) => item.id);
+    final scriptIds = {
+      ...scripts.map((item) => item.id),
+      ...await database.scriptsDao.ids().get(),
+    };
+    final providerFileNames = await database.clashProvidersDao
+        .fileNames()
+        .get();
     final pathsToDelete = await shakingProfileTask((
       profileIds: profileIds,
       scriptIds: scriptIds,
+      providerFileNames: providerFileNames,
     ));
     await Future.wait(pathsToDelete.map(safeDeletePath));
   }
@@ -40,23 +52,19 @@ class StoreAction extends _$StoreAction {
         }
       }
     }
-    final clearResults = await Future.wait(
+    await Future.wait(
       profileIds.map((profileId) async {
         try {
-          return await _core.clearEffect(profileId);
+          await _core.clearEffect(profileId);
         } catch (error) {
-          return 'clearEffect($profileId) failed: $error';
+          commonPrint.log(
+            'clearEffect($profileId) failed: $error',
+            logLevel: LogLevel.warning,
+          );
         }
       }),
     );
-    for (final error in clearResults.where((error) => error.isNotEmpty)) {
-      commonPrint.log(error, logLevel: LogLevel.warning);
-    }
-    await preferences.clearPreferences();
-    commonPrint.log('clear preferences');
-    await database.close();
-    await File(await appPath.databasePath).safeDelete(recursive: true);
-    await Directory(await appPath.profilesPath).safeDelete(recursive: true);
+    await clearAppData();
     unawaited(ref.read(systemActionProvider.notifier).handleExit(false));
   }
 }

@@ -5,7 +5,11 @@ class StringMapConverter extends TypeConverter<Map<String, String>, String> {
 
   @override
   Map<String, String> fromSql(String fromDb) {
-    return Map<String, String>.from(json.decode(fromDb));
+    return decodeOrRestoreDefault(
+      'string map',
+      () => Map<String, String>.from(json.decode(fromDb)),
+      () => {},
+    );
   }
 
   @override
@@ -19,7 +23,11 @@ class StringListConverter extends TypeConverter<List<String>, String> {
 
   @override
   List<String> fromSql(String fromDb) {
-    return List<String>.from(json.decode(fromDb));
+    return decodeOrRestoreDefault(
+      'string list',
+      () => List<String>.from(json.decode(fromDb)),
+      () => [],
+    );
   }
 
   @override
@@ -33,11 +41,60 @@ class StringSetConverter extends TypeConverter<Set<String>, String> {
 
   @override
   Set<String> fromSql(String fromDb) {
-    return Set<String>.from(json.decode(fromDb));
+    return decodeOrRestoreDefault(
+      'string set',
+      () => Set<String>.from(json.decode(fromDb)),
+      () => {},
+    );
   }
 
   @override
   String toSql(Set<String> value) {
     return json.encode(value.toList());
+  }
+}
+
+class JsonMapConverter extends TypeConverter<Map<String, dynamic>, String> {
+  const JsonMapConverter();
+
+  @override
+  Map<String, dynamic> fromSql(String fromDb) {
+    return Map<String, dynamic>.from(json.decode(fromDb));
+  }
+
+  @override
+  String toSql(Map<String, dynamic> value) {
+    return json.encode(value);
+  }
+}
+
+class IconSetIconsConverter extends TypeConverter<List<IconSetIcon>, String> {
+  const IconSetIconsConverter();
+
+  @override
+  List<IconSetIcon> fromSql(String fromDb) {
+    return [
+      for (final item in json.decode(fromDb) as List)
+        IconSetIcon.fromJson(Map<String, Object?>.from(item as Map)),
+    ];
+  }
+
+  @override
+  String toSql(List<IconSetIcon> value) {
+    return json.encode([for (final icon in value) icon.toJson()]);
+  }
+}
+
+class IpQualityConverter extends TypeConverter<IpQuality, String> {
+  const IpQualityConverter();
+
+  @override
+  IpQuality fromSql(String fromDb) {
+    return IpQuality.fromJson(Map<String, Object?>.from(json.decode(fromDb)));
+  }
+
+  @override
+  String toSql(IpQuality value) {
+    return json.encode(value.toJson());
   }
 }

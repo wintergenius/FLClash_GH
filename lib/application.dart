@@ -2,17 +2,20 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/common/window.dart';
 import 'package:fl_clash/bootstrap.dart';
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/common/system_dns.dart';
+import 'package:fl_clash/common/window.dart';
+import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/manager/hotkey_manager.dart';
 import 'package:fl_clash/manager/manager.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:fl_clash/ui/ui.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,6 +25,7 @@ Widget buildManagerStack({
   required bool isDesktop,
   required Future<void> Function(List<ConnectivityResult> results)
   onConnectivityChanged,
+  Stream<ProcessSignal>? terminateSignals,
   required Widget child,
 }) {
   final platformApp = isDesktop
@@ -37,15 +41,14 @@ Widget buildManagerStack({
   );
   final platformState = isDesktop
       ? WindowManager(
+          terminateSignals: terminateSignals,
           child: TrayManager(
             child: HotKeyManager(child: ProxyManager(child: state)),
           ),
         )
       : AndroidManager(child: TileManager(child: state));
   return AppEnvManager(
-    child: LocaleManager(
-      child: StatusManager(child: ThemeManager(child: platformState)),
-    ),
+    child: LocaleManager(child: ThemeManager(child: platformState)),
   );
 }
 
@@ -59,19 +62,10 @@ class Application extends ConsumerStatefulWidget {
 class ApplicationState extends ConsumerState<Application> {
   Timer? _autoUpdateProfilesTaskTimer;
   bool _preHasVpn = false;
-
-  final _pageTransitionsTheme = const PageTransitionsTheme(
-    builders: <TargetPlatform, PageTransitionsBuilder>{
-      TargetPlatform.android: commonSharedXPageTransitions,
-      TargetPlatform.windows: commonSharedXPageTransitions,
-      TargetPlatform.linux: commonSharedXPageTransitions,
-      TargetPlatform.macOS: commonSharedXPageTransitions,
-    },
-  );
-
-  ColorScheme _getAppColorScheme({required Brightness brightness}) {
-    return ref.read(genColorSchemeProvider(brightness));
-  }
+  // Windows can only watch SIGINT and SIGHUP.
+  final _terminateSignals = system.isDesktop && !system.isWindows
+      ? ProcessSignal.sigterm.watch()
+      : null;
 
   @override
   void initState() {
@@ -85,7 +79,9 @@ class ApplicationState extends ConsumerState<Application> {
       }
       _autoUpdateProfilesTask();
       _initLink();
-      unawaited(app?.initShortcuts());
+      if (!safeModeBuild) {
+        unawaited(app?.initShortcuts());
+      }
     });
   }
 
@@ -117,7 +113,7 @@ class ApplicationState extends ConsumerState<Application> {
         unawaited(
           ref
               .read(profilesActionProvider.notifier)
-              .addProfileFormURL(url, label: name),
+              .addProfileFromLink(url, label: name),
         );
       },
     );
@@ -126,6 +122,8 @@ class ApplicationState extends ConsumerState<Application> {
   void _autoUpdateProfilesTask() {
     _autoUpdateProfilesTaskTimer = Timer(const Duration(minutes: 20), () async {
       await ref.read(profilesActionProvider.notifier).autoUpdateProfiles();
+      await ref.read(resourcesActionProvider.notifier).autoUpdate();
+      await ref.read(mitmModulesActionProvider.notifier).autoUpdate();
       if (!mounted) {
         return;
       }
@@ -141,7 +139,15 @@ class ApplicationState extends ConsumerState<Application> {
     unawaited(ref.read(systemActionProvider.notifier).updateLocalIp());
     final hasVpn = results.contains(ConnectivityResult.vpn);
     if (_preHasVpn == hasVpn) {
-      ref.read(checkIpNumProvider.notifier).add();
+      ref.read(routeTrackerProvider.notifier).bumpHostEpoch();
+      // Android's NetworkObserver tells the Core about a new network itself.
+      if (system.isDesktop) {
+        debouncer.call(
+          FunctionTag.networkChange,
+          ref.read(coreActionProvider.notifier).reportNetworkChange,
+          duration: const Duration(milliseconds: 200),
+        );
+      }
     }
     _preHasVpn = hasVpn;
   }
@@ -154,47 +160,47 @@ class ApplicationState extends ConsumerState<Application> {
           appSettingProvider.select((state) => state.locale),
         );
         final themeProps = ref.watch(themeSettingProvider);
-        return MaterialApp(
+        final textScale = themeProps.textScale;
+        return PrismApp(
           debugShowCheckedModeBanner: false,
           navigatorKey: globalState.navigatorKey,
           onNavigationNotification: (_) => true,
           localizationsDelegates: const [
             AppLocalizations.delegate,
-            ...GlobalMaterialLocalizations.delegates,
+            AppUiLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
           ],
           builder: (context, child) {
-            // The bridge's legacy Theme swaps in its own default IconTheme color,
-            // which material_ui IconButton.filled reads as custom and loses onPrimary.
-            // ignore: deprecated_member_use
-            return MaterialUiCompatibilityBridge(
-              child: IconTheme(
-                data: Theme.of(context).iconTheme,
-                child: buildManagerStack(
-                  isDesktop: system.isDesktop,
-                  onConnectivityChanged: _handleConnectivityChanged,
-                  child: child!,
-                ),
-              ),
+            return buildManagerStack(
+              isDesktop: system.isDesktop,
+              onConnectivityChanged: _handleConnectivityChanged,
+              terminateSignals: _terminateSignals,
+              child: child!,
             );
           },
-          scrollBehavior: const BaseScrollBehavior(),
           title: displayName,
           locale: getLocaleForString(locale),
           supportedLocales: AppLocalizations.delegate.supportedLocales,
           themeMode: themeProps.themeMode,
-          theme: ThemeData(
-            useMaterial3: true,
-            pageTransitionsTheme: _pageTransitionsTheme,
-            colorScheme: _getAppColorScheme(brightness: Brightness.light),
-          ).withAppShapes,
-          darkTheme: ThemeData(
-            useMaterial3: true,
-            pageTransitionsTheme: _pageTransitionsTheme,
-            colorScheme: _getAppColorScheme(
-              brightness: Brightness.dark,
-            ).toPureBlack(themeProps.pureBlack),
-          ).withAppShapes,
-          home: child!,
+          theme: watchAppTheme(ref, Brightness.light),
+          darkTheme: watchAppTheme(ref, Brightness.dark),
+          textScale: textScale.enable ? textScale.scale : null,
+          minTextScale: minTextScale,
+          maxTextScale: maxTextScale,
+          liquidGlass: switch (themeProps.liquidGlass) {
+            LiquidGlassMode.none => null,
+            LiquidGlassMode.ultra => LiquidGlassQuality.ultra,
+            LiquidGlassMode.standard => LiquidGlassQuality.standard,
+          },
+          emojiFont: (family: FontFamily.twEmoji.value, pattern: emojiPattern),
+          stackedBanners: !ref.watch(isMobileViewProvider),
+          bannerTopInset: ref.watch(overlayTopOffsetProvider),
+          remoteFocus: system.isTV,
+          floatingKeyboard: app?.floatingKeyboard,
+          onGenerateRoute: (settings) => HomeRoute(
+            settings: settings,
+            builder: (_) => KeyboardInsetHold(child: child!),
+          ),
         );
       },
       child: const HomePage(),

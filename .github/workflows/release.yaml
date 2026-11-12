@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
-  FLUTTER_VERSION: '3.47.4'
+  FLUTTER_VERSION: '3.47.6'
   GO_VERSION: '1.27.1'
   NDK_VERSION: r28c
 
@@ -46,7 +46,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: windows-amd64
-          workspaces: services/helper
+          workspaces: |
+            services/helper
+            plugins/rust_api/rust
           cache-directories: .dart_tool/hooks_runner
 
       - name: Enable git long paths
@@ -63,6 +65,16 @@ jobs:
         run: |
           flutter --version
           flutter pub get
+
+      - name: Fetch CA certificates
+        shell: bash
+        env:
+          CA_BUNDLE: cacert-2026-09-25.pem
+          CA_BUNDLE_SHA256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        run: |
+          bundle=core/Clash.Meta/component/ca/ca-certificates.crt
+          curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/$CA_BUNDLE"
+          echo "$CA_BUNDLE_SHA256  $bundle" | sha256sum -c -
 
       - name: Build installer and portable zip
         run: dart setup.dart windows --env stable -v
@@ -95,6 +107,8 @@ jobs:
         id: ndk
         with:
           ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+          link-to-sdk: true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -109,7 +123,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: android
-          workspaces: services/helper
+          workspaces: |
+            services/helper
+            plugins/rust_api/rust
           cache-directories: .dart_tool/hooks_runner
 
       - name: Setup Flutter
@@ -141,6 +157,16 @@ jobs:
             grep -qE "^$k=." android/local.properties || { echo "$k missing in android/local.properties"; exit 1; }
           done
           echo "keystore $(wc -c < android/app/keystore.jks) bytes, signing keys present"
+
+      - name: Fetch CA certificates
+        shell: bash
+        env:
+          CA_BUNDLE: cacert-2026-09-25.pem
+          CA_BUNDLE_SHA256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        run: |
+          bundle=core/Clash.Meta/component/ca/ca-certificates.crt
+          curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/$CA_BUNDLE"
+          echo "$CA_BUNDLE_SHA256  $bundle" | sha256sum -c -
 
       - name: Build APKs (split per ABI)
         env:
@@ -179,6 +205,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          submodules: recursive
           fetch-depth: 0
 
       - name: Download artifacts

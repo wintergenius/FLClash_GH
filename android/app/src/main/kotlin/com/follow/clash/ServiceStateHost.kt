@@ -1,9 +1,14 @@
 package com.follow.clash
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
+import androidx.core.content.ContextCompat
 import com.follow.clash.common.GlobalState
 import com.follow.clash.models.SharedState
 import com.follow.clash.plugins.AppPlugin
+import com.follow.clash.plugins.ServicePlugin
 import com.follow.clash.plugins.TilePlugin
 import com.follow.clash.service.ServiceConfig
 import com.follow.clash.service.models.NotificationParams
@@ -11,13 +16,18 @@ import com.follow.clash.service.models.VpnOptions
 import io.flutter.embedding.engine.FlutterEngine
 import kotlinx.coroutines.CoroutineScope
 
+internal data class ServiceRuntime(
+    val vpn: Boolean,
+    val startedAtMillis: Long,
+)
+
 /**
  * The machine owns the arbitration and the transitions; this is only the part that cannot run on a
  * plain JVM, so unit tests can drive the state machine with an in-memory implementation.
  */
 internal interface ServiceStateHost {
     val scope: CoroutineScope
-    val runTimeMillis: Long
+    val runtime: ServiceRuntime?
     val homeDirPath: String
     val sdkInt: Int
 
@@ -25,35 +35,35 @@ internal interface ServiceStateHost {
 
     fun showToast(message: String)
 
-    fun setCrashlytics(enabled: Boolean)
-
     fun updateNotificationParams(params: NotificationParams)
 
     fun loadSharedState(): SharedState
 
     fun isVpnPermissionGranted(): Boolean
 
+    fun isLocalNetworkPermissionGranted(): Boolean
+
     fun tile(): TileGateway?
 
     fun app(): AppGateway?
 
+    fun notifyStopped()
+
     suspend fun quickSetup(initParams: String, setupParams: String): Result<String>
 
-    suspend fun startService(options: VpnOptions): Long
+    suspend fun startService(options: VpnOptions): Boolean
 
     suspend fun stopService()
-
-    suspend fun isVpnServiceActive(): Boolean
 }
 
-internal interface TileGateway {
+internal fun interface TileGateway {
     fun handleStart()
-
-    fun handleStop()
 }
 
 internal interface AppGateway {
     fun requestNotificationPermission(callback: (Boolean) -> Unit)
+
+    fun requestLocalNetworkPermission(callback: (Boolean) -> Unit)
 
     fun prepareVpn(enable: Boolean, callback: (Boolean) -> Unit)
 
@@ -67,8 +77,8 @@ internal object AndroidServiceStateHost : ServiceStateHost {
     override val scope: CoroutineScope
         get() = GlobalState
 
-    override val runTimeMillis: Long
-        get() = ServiceController.getRunTimeMillis()
+    override val runtime: ServiceRuntime?
+        get() = ServiceController.runtime
 
     override val homeDirPath: String
         get() = GlobalState.application.filesDir.path
@@ -90,8 +100,6 @@ internal object AndroidServiceStateHost : ServiceStateHost {
 
     override fun showToast(message: String) = GlobalState.application.showToast(message)
 
-    override fun setCrashlytics(enabled: Boolean) = GlobalState.setCrashlytics(enabled)
-
     override fun updateNotificationParams(params: NotificationParams) =
         ServiceConfig.updateNotificationParams(params)
 
@@ -100,18 +108,24 @@ internal object AndroidServiceStateHost : ServiceStateHost {
     override fun isVpnPermissionGranted(): Boolean =
         VpnService.prepare(GlobalState.application) == null
 
-    override fun tile(): TileGateway? = flutterEngine?.plugin<TilePlugin>()?.let { plugin ->
-        object : TileGateway {
-            override fun handleStart() = plugin.handleStart()
+    override fun isLocalNetworkPermissionGranted(): Boolean =
+        sdkInt < Build.VERSION_CODES.CINNAMON_BUN ||
+            ContextCompat.checkSelfPermission(
+                GlobalState.application,
+                Manifest.permission.ACCESS_LOCAL_NETWORK,
+            ) == PackageManager.PERMISSION_GRANTED
 
-            override fun handleStop() = plugin.handleStop()
-        }
+    override fun tile(): TileGateway? = flutterEngine?.plugin<TilePlugin>()?.let { plugin ->
+        TileGateway(plugin::handleStart)
     }
 
     override fun app(): AppGateway? = flutterEngine?.plugin<AppPlugin>()?.let { plugin ->
         object : AppGateway {
             override fun requestNotificationPermission(callback: (Boolean) -> Unit) =
                 plugin.requestNotificationPermission(callback)
+
+            override fun requestLocalNetworkPermission(callback: (Boolean) -> Unit) =
+                plugin.requestLocalNetworkPermission(callback)
 
             override fun prepareVpn(enable: Boolean, callback: (Boolean) -> Unit) =
                 plugin.prepareVpn(enable, callback)
@@ -121,13 +135,15 @@ internal object AndroidServiceStateHost : ServiceStateHost {
         }
     }
 
+    override fun notifyStopped() {
+        flutterEngine?.plugin<ServicePlugin>()?.notifyStopped()
+    }
+
     override suspend fun quickSetup(initParams: String, setupParams: String): Result<String> =
         ServiceController.quickSetup(initParams, setupParams)
 
-    override suspend fun startService(options: VpnOptions): Long =
+    override suspend fun startService(options: VpnOptions): Boolean =
         ServiceController.start(options)
 
     override suspend fun stopService() = ServiceController.stop()
-
-    override suspend fun isVpnServiceActive(): Boolean = ServiceController.isVpnServiceActive()
 }

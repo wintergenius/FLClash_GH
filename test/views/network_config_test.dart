@@ -1,16 +1,20 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/config/network.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:fl_clash/views/config/tun.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:prism_ui/prism_ui.dart';
 
 import '../helpers/test_app.dart';
 import '../helpers/test_profiles.dart';
+import '../helpers/host_scaffold.dart';
 
 class _ToggleCase {
   final String name;
@@ -44,7 +48,6 @@ final _toggleCases = <_ToggleCase>[
     'vpn system proxy',
     const VpnSystemProxyItem(),
     (c) => c.read(vpnSettingProvider).systemProxy,
-    initial: true,
   ),
   _ToggleCase(
     'system proxy',
@@ -63,6 +66,12 @@ final _toggleCases = <_ToggleCase>[
     'dns hijacking',
     const DNSHijackingItem(),
     (c) => c.read(vpnSettingProvider).dnsHijacking,
+    initial: true,
+  ),
+  _ToggleCase(
+    'bypass private route',
+    const BypassPrivateRouteItem(),
+    (c) => c.read(networkSettingProvider).bypassPrivateRoute,
     initial: true,
   ),
 ];
@@ -92,7 +101,7 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: TestApp(
-          child: Scaffold(body: ListView(children: [item])),
+          child: HostScaffold(body: ListView(children: [item])),
         ),
       ),
     );
@@ -123,25 +132,12 @@ void main() {
       final initial = container.read(patchClashConfigProvider).tun.stack;
       final target = TunStack.values.firstWhere((item) => item != initial);
 
-      await tester.tap(find.byType(ListTile).first);
+      await tester.tap(find.byType(ListRow).first);
       await tester.pumpAndSettle();
       await tester.tap(find.text(target.name).last);
       await tester.pumpAndSettle();
 
       expect(container.read(patchClashConfigProvider).tun.stack, target);
-    });
-
-    testWidgets('the route mode picker writes the chosen mode', (tester) async {
-      await pumpItem(tester, const RouteModeItem());
-      final initial = container.read(networkSettingProvider).routeMode;
-      final target = RouteMode.values.firstWhere((item) => item != initial);
-
-      await tester.tap(find.byType(ListTile).first);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(_routeModeLabel(target)).last);
-      await tester.pumpAndSettle();
-
-      expect(container.read(networkSettingProvider).routeMode, target);
     });
 
     testWidgets('the interface name mode picker writes the chosen mode', (
@@ -155,7 +151,7 @@ void main() {
         (item) => item != initial,
       );
 
-      await tester.tap(find.byType(ListTile).first);
+      await tester.tap(find.byType(ListRow).first);
       await tester.pumpAndSettle();
       await tester.tap(find.text(_interfaceNameModeLabel(target)).last);
       await tester.pumpAndSettle();
@@ -167,82 +163,134 @@ void main() {
     });
   });
 
-  group('interface name visibility', () {
-    testWidgets('is hidden unless the mode is custom', (tester) async {
-      container
-          .read(patchClashConfigProvider.notifier)
-          .update(
-            (state) =>
-                state.copyWith(interfaceNameMode: InterfaceNameMode.follow),
-          );
-
-      await pumpItem(tester, const InterfaceNameItem());
-
-      expect(find.byType(ListTile), findsNothing);
-    });
-
-    testWidgets('is shown when the mode is custom', (tester) async {
-      container
-          .read(patchClashConfigProvider.notifier)
-          .update(
-            (state) =>
-                state.copyWith(interfaceNameMode: InterfaceNameMode.custom),
-          );
-
-      await pumpItem(tester, const InterfaceNameItem());
-
-      expect(find.byType(ListTile), findsOneWidget);
-    });
-  });
-
   group('network options items', () {
-    test('interface name rows appear only on desktop', () {
-      final desktopTypes = networkOptionsItems(
-        isDesktop: true,
+    List<Type> types({
+      required bool isDesktop,
+      bool isCustomInterfaceName = true,
+    }) {
+      return networkOptionsItems(
+        isDesktop: isDesktop,
         isMacOS: false,
-      ).map((item) => item.runtimeType);
+        isCustomInterfaceName: isCustomInterfaceName,
+      ).map((item) => item.runtimeType).toList();
+    }
+
+    test('interface name rows appear only on desktop', () {
+      final desktopTypes = types(isDesktop: true);
       expect(desktopTypes, contains(InterfaceNameModeItem));
       expect(desktopTypes, contains(InterfaceNameItem));
 
-      final androidTypes = networkOptionsItems(
-        isDesktop: false,
-        isMacOS: false,
-      ).map((item) => item.runtimeType);
+      final androidTypes = types(isDesktop: false);
       expect(androidTypes, isNot(contains(InterfaceNameModeItem)));
       expect(androidTypes, isNot(contains(InterfaceNameItem)));
     });
-  });
 
-  group('route address visibility', () {
-    testWidgets('is hidden while bypassing private addresses', (tester) async {
-      container
-          .read(networkSettingProvider.notifier)
-          .update(
-            (state) => state.copyWith(routeMode: RouteMode.bypassPrivate),
-          );
-
-      await pumpItem(tester, const RouteAddressItem());
-
-      expect(find.byType(ListTile), findsNothing);
-    });
-
-    testWidgets('is shown for every other route mode', (tester) async {
-      container
-          .read(networkSettingProvider.notifier)
-          .update((state) => state.copyWith(routeMode: RouteMode.config));
-
-      await pumpItem(tester, const RouteAddressItem());
-
-      expect(find.byType(ListTile), findsOneWidget);
+    test('the interface name row is listed only for the custom mode', () {
+      expect(
+        types(isDesktop: true, isCustomInterfaceName: false),
+        isNot(contains(InterfaceNameItem)),
+      );
     });
   });
-}
 
-String _routeModeLabel(RouteMode mode) {
-  return switch (mode) {
-    RouteMode.config => 'Use config',
-    RouteMode.bypassPrivate => 'Bypass private addresses',
-  };
+  group('tun settings', () {
+    List<Widget> items({bool isMipsStack = true}) =>
+        tunItems(isMipsStack: isMipsStack);
+
+    test('Android sets the routes its VPN service starts with', () {
+      final types = items().map((item) => item.runtimeType);
+      expect(types, contains(BypassPrivateRouteItem));
+      expect(types, contains(RouteAddressItem));
+      expect(items(), hasLength(5));
+      expect(items(isMipsStack: false), hasLength(4));
+    });
+
+    Widget desktopSection({bool isWindows = false}) =>
+        TunSection(isDesktop: true, isLinux: false, isWindows: isWindows);
+
+    void setOverrideKeys(Set<TunOverrideKey> keys) {
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith(tunOverrideKeys: keys));
+    }
+
+    testWidgets('desktop adds an override from the last row of the section', (
+      tester,
+    ) async {
+      await pumpItem(tester, desktopSection());
+      final l = currentAppLocalizations;
+      expect(find.text(l.bypassPrivateRoute), findsOneWidget);
+      expect(find.text('MTU'), findsNothing);
+      expect(find.textContaining(l.tunOverrideDesc), findsOneWidget);
+
+      await tester.tap(find.text(l.addOverrideEntry));
+      await tester.pumpAndSettle();
+      expect(find.text(l.strictRoute), findsNothing);
+      await tester.tap(find.text('MTU'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(Offset.zero);
+      await tester.pumpAndSettle();
+
+      final config = container.read(patchClashConfigProvider);
+      expect(config.tunOverrideKeys, {TunOverrideKey.mtu});
+      expect(config.tunOverride.mtu, defaultTunMtu);
+      expect(find.text('MTU'), findsOneWidget);
+    });
+
+    testWidgets('a listed override leaves the section with its button', (
+      tester,
+    ) async {
+      setOverrideKeys({TunOverrideKey.strictRoute});
+      await pumpItem(tester, desktopSection(isWindows: true));
+      final l = currentAppLocalizations;
+      expect(find.text(l.strictRoute), findsOneWidget);
+      expect(find.textContaining(l.strictRouteDesc), findsOneWidget);
+
+      await tester.tap(find.byTooltip(l.remove));
+      await tester.pumpAndSettle();
+
+      expect(container.read(patchClashConfigProvider).tunOverrideKeys, isEmpty);
+      expect(find.text(l.strictRoute), findsNothing);
+    });
+
+    testWidgets('the add row leaves once every offered key is listed', (
+      tester,
+    ) async {
+      setOverrideKeys(
+        appTunOverrideSpec(isLinux: false, isWindows: false).values.toSet(),
+      );
+      await pumpItem(tester, desktopSection());
+
+      expect(find.text(currentAppLocalizations.addOverrideEntry), findsNothing);
+    });
+
+    testWidgets('a number shows the core default and resets to it', (
+      tester,
+    ) async {
+      await pumpItem(tester, items().first);
+      final l = currentAppLocalizations;
+      expect(find.text('1360'), findsOneWidget);
+
+      await tester.tap(find.text('MTU'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '1400');
+      await tester.tap(find.text(l.submit));
+      await tester.pumpAndSettle();
+      expect(container.read(patchClashConfigProvider).tun.mtu, 1400);
+
+      await tester.tap(find.text('MTU'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(l.reset));
+      await tester.pumpAndSettle();
+      expect(container.read(patchClashConfigProvider).tun.mtu, 1360);
+    });
+
+    test('keep-alive rows stay off Android and the mark is Linux only', () {
+      expect(outboundItems(isDesktop: false, isLinux: false), isEmpty);
+      expect(outboundItems(isDesktop: true, isLinux: false), hasLength(3));
+      expect(outboundItems(isDesktop: true, isLinux: true), hasLength(4));
+    });
+  });
 }
 
 String _interfaceNameModeLabel(InterfaceNameMode mode) {

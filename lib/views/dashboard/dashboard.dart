@@ -1,357 +1,365 @@
-import 'package:defer_pointer/defer_pointer.dart';
+import 'dart:math' as math;
+
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/providers/providers.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/widgets.dart';
 
+import 'edit.dart';
+import 'layout.dart';
+import 'style.dart';
 import 'widget_registry.dart';
 import 'widgets/core_status_button.dart';
-import 'widgets/start_button.dart';
+import 'widgets/widgets.dart';
 
-typedef _IsEditWidgetBuilder = Widget Function(bool isEdit);
+// Narrower columns leave a pair of service cells too tight for a status, so
+// the grid stacks them in one.
+const _servicePairColumnMin = 290.0;
 
-const _compactCrossAxisCount = 8;
-const _mediumCrossAxisCount = 12;
-const _maxCrossAxisCount = 16;
-const _mediumGridBreakpoint = 480.0;
-const _maxGridBreakpoint = 840.0;
-const _maxGridWidth = 280.0 * _maxCrossAxisCount / 4;
+const _maxColumnWidth = 440.0;
 
 class DashboardView extends ConsumerStatefulWidget {
-  const DashboardView({super.key});
+  const DashboardView({super.key, this.platform});
+
+  /// The host's platform when null.
+  final SupportPlatform? platform;
 
   @override
   ConsumerState<DashboardView> createState() => _DashboardViewState();
 }
 
 class _DashboardViewState extends ConsumerState<DashboardView> {
-  final key = GlobalKey<SuperGridState>();
-  final _isEditNotifier = ValueNotifier<bool>(false);
-  final _addedWidgetsNotifier = ValueNotifier<List<GridItem>>([]);
+  var _editing = false;
+  final _cardKeys = <DashboardWidget, GlobalKey>{};
+
+  void _setEditing(bool editing) {
+    setState(() => _editing = editing);
+  }
+
+  GlobalKey _cardKeyOf(DashboardWidget widget) =>
+      _cardKeys.putIfAbsent(widget, GlobalKey.new);
 
   @override
-  void initState() {
-    super.initState();
-    ref.listenManual(
-      dashboardStateProvider.select((state) => state.dashboardWidgets),
-      (_, dashboardWidgets) => _syncAddedWidgets(dashboardWidgets),
-      fireImmediately: true,
-    );
-  }
-
-  void _syncAddedWidgets(List<DashboardWidget> dashboardWidgets) {
-    bool onThisPlatform(DashboardWidget item) =>
-        item.platforms.contains(SupportPlatform.currentPlatform);
-    final shown = dashboardWidgets
-        .where(onThisPlatform)
-        .map((item) => item.widget)
-        .toSet();
-    _addedWidgetsNotifier.value = DashboardWidget.values
-        .where((item) => onThisPlatform(item) && !shown.contains(item.widget))
-        .map((item) => item.widget)
-        .toList();
-  }
-
-  @override
-  void dispose() {
-    _isEditNotifier.dispose();
-    _addedWidgetsNotifier.dispose();
-    super.dispose();
-  }
-
-  Widget _buildIsEdit(_IsEditWidgetBuilder builder) {
-    return ValueListenableBuilder(
-      valueListenable: _isEditNotifier,
-      builder: (_, isEdit, _) {
-        return builder(isEdit);
-      },
-    );
-  }
-
-  List<Widget> _buildActions(bool isEdit) {
-    return [
-      if (!isEdit && coreLib == null) const CoreStatusButton(),
-      if (isEdit)
-        ValueListenableBuilder(
-          valueListenable: _addedWidgetsNotifier,
-          builder: (_, addedChildren, child) {
-            if (addedChildren.isEmpty) {
-              return Container();
-            }
-            return child!;
-          },
-          child: IconButton(
-            tooltip: context.appLocalizations.addWidget,
-            onPressed: () {
-              _showAddWidgetsModal();
-            },
-            icon: const Icon(Icons.add_circle),
+  Widget build(BuildContext context) {
+    final platform = widget.platform ?? SupportPlatform.currentPlatform;
+    final viewSize = ref.watch(viewSizeProvider);
+    final sideWidth = ref.watch(sideWidthProvider);
+    final scale = math.max(1.0, MediaQuery.textScalerOf(context).scale(1));
+    final size = Size(viewSize.width - sideWidth, viewSize.height) / scale;
+    final editable = !DashboardDensity.of(size).isDesktop;
+    if (!editable) {
+      _editing = false;
+    }
+    final editing = _editing;
+    final gap = cardSpacingOf(context, ref.watch(viewModeProvider));
+    final appLocalizations = context.appLocalizations;
+    return Scaffold(
+      backgroundColor: DashboardColors.of(context).page,
+      title: editing
+          ? appLocalizations.editDashboard
+          : appLocalizations.dashboard,
+      actions: [
+        if (!editable) const UpdateStatusButton(),
+        if (!editing && coreLib == null) const CoreStatusButton(),
+      ],
+      confirmationAction: editing
+          ? IconButtonData(
+              glyph: AppGlyphs.check,
+              tooltip: appLocalizations.done,
+              onPressed: () => _setEditing(false),
+            )
+          : null,
+      iconActions: [
+        if (editable && !editing)
+          IconButtonData(
+            glyph: AppGlyphs.edit,
+            tooltip: appLocalizations.editDashboard,
+            onPressed: () => _setEditing(true),
           ),
-        ),
-      FadeRotationScaleBox(
-        child: isEdit
-            ? IconButton(
-                tooltip: context.appLocalizations.save,
-                key: const ValueKey(true),
-                icon: const Icon(Icons.save, key: ValueKey('save-icon')),
-                onPressed: _handleSaveAndExit,
-              )
-            : IconButton(
-                tooltip: context.appLocalizations.edit,
-                key: const ValueKey(false),
-                icon: const Icon(Icons.edit, key: ValueKey('edit-icon')),
-                onPressed: _handleEnterEdit,
-              ),
+      ],
+      // The providers learn a resize a frame late, too late for the cards.
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final room = constraints.biggest / scale;
+          final layout = DashboardDensity.of(room);
+          return DashboardDensityScope(
+            density: layout,
+            scale: scale,
+            child: layout.isDesktop
+                ? _DesktopDashboard(
+                    platform: platform,
+                    columns: dashboardColumnsOf(room.width),
+                    gap: gap,
+                  )
+                : _MobileDashboard(
+                    platform: platform,
+                    gap: gap,
+                    editing: editing,
+                    cardKeyOf: _cardKeyOf,
+                    onDone: () => _setEditing(false),
+                  ),
+          );
+        },
       ),
-    ];
+    );
   }
+}
 
-  void _showAddWidgetsModal() {
-    showSheet(
-      builder: (_) {
-        return ValueListenableBuilder(
-          valueListenable: _addedWidgetsNotifier,
-          builder: (_, value, _) {
-            return AdaptiveSheetScaffold(
-              body: _AddDashboardWidgetModal(
-                items: value,
-                onAdd: (gridItem) {
-                  key.currentState?.handleAdd(gridItem);
-                },
+/// Four columns fill the window, the tables taking what the rows above them
+/// leave. A window too short for the tables, and every two column one, gets
+/// the summary cards instead, so no list scrolls inside a page that scrolls.
+class _DesktopDashboard extends StatelessWidget {
+  const _DesktopDashboard({
+    required this.platform,
+    required this.columns,
+    required this.gap,
+  });
+
+  final SupportPlatform platform;
+  final int columns;
+  final double gap;
+
+  @override
+  Widget build(BuildContext context) {
+    final density = DashboardDensityScope.of(context);
+    final compact = density.isCompact;
+    final scale = DashboardDensityScope.scaleOf(context);
+    final base = EdgeInsetsDirectional.fromSTEB(
+      16,
+      context.contentTopPadding,
+      24,
+      24 + MediaQuery.paddingOf(context).bottom,
+    );
+    final topHeight = (compact ? 176 : 208) * scale;
+    final controlHeight = (compact ? 56 : 64) * scale;
+    final middleHeight = (compact ? 152 : 176) * scale;
+    final tablesHeight = connectionsTableMinHeight(density, scale);
+    final summaryHeight = (compact ? 112 : 120) * scale;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final room =
+            constraints.maxWidth - base.horizontal - gap * (columns - 1);
+        final column = math.min(room / columns, _maxColumnWidth * scale);
+        final inset = (room - column * columns) / 2;
+        final padding = base.copyWith(
+          start: base.start + inset,
+          end: base.end + inset,
+        );
+        double span(int columns) => column * columns + gap * (columns - 1);
+        Widget row(List<(int, Widget)> cards) => Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: gap,
+          children: [
+            for (final (columns, card) in cards)
+              SizedBox(
+                width: span(columns),
+                child: RepaintBoundary(child: card),
               ),
-              title: context.appLocalizations.add,
-            );
-          },
+          ],
+        );
+        Widget sized(double height, Widget child) =>
+            SizedBox(height: height, child: child);
+        final switches =
+            DashboardWidget.networkTakeover.platforms.contains(platform)
+            ? const [
+                (1, NetworkTakeoverTile(TakeoverSwitch.systemProxy)),
+                (1, NetworkTakeoverTile(TakeoverSwitch.tun)),
+              ]
+            : const [(2, VpnTile())];
+        final half = columns ~/ 2;
+        final summaries = row([
+          (half, const ConnectionStatsCard()),
+          (half, const ProxyGroupsSummaryCard()),
+        ]);
+        if (columns == 2) {
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: padding,
+            child: Column(
+              spacing: gap,
+              children: [
+                sized(
+                  topHeight,
+                  const RepaintBoundary(child: CurrentOutboundCard()),
+                ),
+                sized(
+                  topHeight,
+                  row(const [
+                    (1, SpeedCard(direction: TrafficDirection.upload)),
+                    (1, SpeedCard(direction: TrafficDirection.download)),
+                  ]),
+                ),
+                sized(
+                  controlHeight,
+                  const RepaintBoundary(child: OutboundModeBar()),
+                ),
+                sized(controlHeight, row(switches)),
+                sized(
+                  middleHeight,
+                  row(const [(1, IntranetIpCard()), (1, ProfilesCard())]),
+                ),
+                sized(
+                  middleHeight,
+                  row(const [(1, ServiceStatusCard()), (1, MemoryInfo())]),
+                ),
+                sized(summaryHeight, summaries),
+              ],
+            ),
+          );
+        }
+        final rows = [
+          sized(
+            topHeight,
+            row(const [
+              (2, CurrentOutboundCard()),
+              (1, SpeedCard(direction: TrafficDirection.upload)),
+              (1, SpeedCard(direction: TrafficDirection.download)),
+            ]),
+          ),
+          sized(
+            controlHeight,
+            row([(2, const OutboundModeBar()), ...switches]),
+          ),
+          sized(
+            middleHeight,
+            row([
+              (1, const IntranetIpCard()),
+              (1, const ProfilesCard()),
+              (
+                1,
+                ServiceStatusCard(
+                  columns: column >= _servicePairColumnMin * scale ? 2 : 1,
+                ),
+              ),
+              (1, const MemoryInfo()),
+            ]),
+          ),
+        ];
+        final rowsHeight =
+            padding.vertical +
+            topHeight +
+            controlHeight +
+            middleHeight +
+            gap * 3;
+        final tablesFit = constraints.maxHeight >= rowsHeight + tablesHeight;
+        final fills = constraints.maxHeight >= rowsHeight + summaryHeight;
+        return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: SizedBox(
+            height: fills ? constraints.maxHeight : null,
+            child: Padding(
+              padding: padding,
+              child: Column(
+                spacing: gap,
+                children: [
+                  ...rows,
+                  if (tablesFit)
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        spacing: gap,
+                        children: const [
+                          Expanded(
+                            flex: 3,
+                            child: RepaintBoundary(
+                              child: ConnectionsTableCard(),
+                            ),
+                          ),
+                          Expanded(
+                            flex: 2,
+                            child: RepaintBoundary(child: ProxyGroupsCard()),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (fills)
+                    Expanded(child: summaries)
+                  else
+                    sized(summaryHeight, summaries),
+                ],
+              ),
+            ),
+          ),
         );
       },
-      context: context,
     );
   }
+}
 
-  void _handleEnterEdit() {
-    if (_isEditNotifier.value) {
-      return;
-    }
-    _isEditNotifier.value = true;
-  }
+class _MobileDashboard extends ConsumerWidget {
+  const _MobileDashboard({
+    required this.platform,
+    required this.gap,
+    required this.editing,
+    required this.cardKeyOf,
+    required this.onDone,
+  });
 
-  void _handleExitEdit() {
-    if (!_isEditNotifier.value) {
-      return;
-    }
-    final dashboardWidgets = _getDashboardWidgets(key.currentState);
-    if (dashboardWidgets != null) {
-      _saveDashboardWidgets(dashboardWidgets);
-    }
-    _isEditNotifier.value = false;
-  }
-
-  Future<void> _handleSaveAndExit() async {
-    if (!_isEditNotifier.value) {
-      return;
-    }
-    await _handleSave();
-    if (mounted) {
-      _isEditNotifier.value = false;
-    }
-  }
-
-  Future<void> _handleSave() async {
-    final currentState = key.currentState;
-    if (currentState == null) {
-      return;
-    }
-    if (!mounted || currentState.snapshotChildren.isEmpty) {
-      return;
-    }
-    final transformCompleted = await currentState.isTransformCompleter;
-    if (!transformCompleted ||
-        !mounted ||
-        !currentState.mounted ||
-        !identical(key.currentState, currentState)) {
-      return;
-    }
-    final dashboardWidgets = _getDashboardWidgets(currentState);
-    if (dashboardWidgets == null) {
-      return;
-    }
-    _saveDashboardWidgets(dashboardWidgets);
-  }
-
-  List<DashboardWidget>? _getDashboardWidgets(SuperGridState? currentState) {
-    if (currentState == null) {
-      return null;
-    }
-    final children = currentState.snapshotChildren;
-    if (children.isEmpty) {
-      return null;
-    }
-    return children.map(dashboardWidgetOf).toList();
-  }
-
-  void _saveDashboardWidgets(List<DashboardWidget> dashboardWidgets) {
-    ref
-        .read(appSettingProvider.notifier)
-        .update((state) => state.copyWith(dashboardWidgets: dashboardWidgets));
-  }
+  final SupportPlatform platform;
+  final double gap;
+  final bool editing;
+  final GlobalKey Function(DashboardWidget widget) cardKeyOf;
+  final VoidCallback onDone;
 
   @override
-  Widget build(BuildContext context) {
-    final dashboardState = ref.watch(dashboardStateProvider);
-    final spacing = 14.mAp;
-    final children = [
-      ...dashboardState.dashboardWidgets
-          .where(
-            (item) => item.platforms.contains(SupportPlatform.currentPlatform),
-          )
-          .map((item) => item.widget),
-    ];
-    return _buildIsEdit(
-      (isEdit) => CommonScaffold(
-        title: context.appLocalizations.dashboard,
-        actions: _buildActions(isEdit),
-        floatingActionButton: const StartButton(),
-        body: Align(
-          alignment: Alignment.topCenter,
-          child: Builder(
-            builder: (context) => SingleChildScrollView(
-              padding: const EdgeInsets.all(
-                16,
-              ).copyWith(bottom: 16 + BottomInsetScope.of(context)),
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: _maxGridWidth),
-                  child: LayoutBuilder(
-                    builder: (_, constraints) {
-                      final columns = switch (constraints.maxWidth) {
-                        < _mediumGridBreakpoint => _compactCrossAxisCount,
-                        <= _maxGridBreakpoint => _mediumCrossAxisCount,
-                        _ => _maxCrossAxisCount,
-                      };
-                      return isEdit
-                          ? BackLayerScope(
-                              onBack: _handleExitEdit,
-                              child: SuperGrid(
-                                key: key,
-                                crossAxisCount: columns,
-                                crossAxisSpacing: spacing,
-                                mainAxisSpacing: spacing,
-                                children: children,
-                                onUpdate: () {
-                                  _handleSave();
-                                },
-                              ),
-                            )
-                          : Grid(
-                              crossAxisCount: columns,
-                              crossAxisSpacing: spacing,
-                              mainAxisSpacing: spacing,
-                              children: children,
-                            );
-                    },
-                  ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final saved = ref.watch(
+      dashboardStateProvider.select((state) => state.dashboardWidgets),
+    );
+    final top = context.contentTopPadding;
+    final bottom = 16 + context.bottomInset;
+    return CustomScrollView(
+      // A viewport per card lays them all out and holds the scroll end still.
+      scrollCacheExtent: editing
+          ? ScrollCacheExtent.viewport(DashboardWidget.values.length.toDouble())
+          : null,
+      slivers: [
+        SliverLayoutBuilder(
+          builder: (context, constraints) {
+            final side = dashboardMobileSideOf(constraints.crossAxisExtent);
+            final widgets = [
+              for (final widget in saved)
+                if (widget.platforms.contains(platform)) widget,
+            ];
+            if (editing) {
+              return DashboardEditor(
+                platform: platform,
+                widgets: widgets,
+                cardKeyOf: cardKeyOf,
+                padding: EdgeInsets.fromLTRB(side, top, side, bottom),
+                gap: gap,
+                onDone: onDone,
+              );
+            }
+            return SliverPadding(
+              padding: EdgeInsets.fromLTRB(side, top, side, bottom),
+              // A lazy list estimates the cards it has not laid out from the
+              // ones it has; cards this uneven move the scroll end as it goes.
+              sliver: SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    UpdateStatusSlot(gap: gap),
+                    Column(
+                      spacing: gap,
+                      children: [
+                        for (final widget in widgets)
+                          RepaintBoundary(
+                            key: cardKeyOf(widget),
+                            child: widget.card,
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AddDashboardWidgetModal extends StatelessWidget {
-  final List<GridItem> items;
-  final Function(GridItem item) onAdd;
-
-  const _AddDashboardWidgetModal({required this.items, required this.onAdd});
-
-  @override
-  Widget build(BuildContext context) {
-    return DeferredPointerHandler(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Grid(
-          crossAxisCount: 8,
-          crossAxisSpacing: 16,
-          mainAxisSpacing: 16,
-          children: items
-              .map(
-                (item) => item.wrap(
-                  builder: (child) {
-                    return _AddedContainer(
-                      onAdd: () {
-                        onAdd(item);
-                      },
-                      child: child,
-                    );
-                  },
-                ),
-              )
-              .toList(),
-        ),
-      ),
-    );
-  }
-}
-
-class _AddedContainer extends StatefulWidget {
-  final Widget child;
-  final VoidCallback onAdd;
-
-  const _AddedContainer({required this.child, required this.onAdd});
-
-  @override
-  State<_AddedContainer> createState() => _AddedContainerState();
-}
-
-class _AddedContainerState extends State<_AddedContainer> {
-  @override
-  void initState() {
-    super.initState();
-  }
-
-  @override
-  void didUpdateWidget(_AddedContainer oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.child != widget.child) {}
-  }
-
-  Future<void> _handleAdd() async {
-    widget.onAdd();
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        ActivateBox(child: widget.child),
-        Positioned(
-          top: -8,
-          right: -8,
-          child: DeferPointer(
-            child: SizedBox(
-              width: 24,
-              height: 24,
-              child: IconButton.filled(
-                tooltip: context.appLocalizations.add,
-                iconSize: 20,
-                padding: const EdgeInsets.all(2),
-                onPressed: _handleAdd,
-                icon: const Icon(Icons.add),
-              ),
-            ),
-          ),
+            );
+          },
         ),
       ],
     );

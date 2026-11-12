@@ -7,7 +7,7 @@ import 'src/changelog/git.dart';
 import 'src/changelog/models.dart';
 import 'src/changelog/render.dart';
 
-const _repository = 'chen08209/FlClash';
+const _repository = 'wintergenius/FLClash_GH';
 
 Future<void> main(List<String> arguments) async {
   final parser = ArgParser()
@@ -123,9 +123,13 @@ int _render(String root, ArgResults command) {
 
   final output = switch (rest.first) {
     'release' => renderRelease(version),
+    // Only stable builds pass --tag, and only they get a release page; a
+    // prerelease caption already links its workflow run.
     'telegram' => renderTelegram(
       version,
-      moreUrl: 'https://github.com/$_repository/releases',
+      moreUrl: tag == null
+          ? null
+          : 'https://github.com/$_repository/releases/tag/$tag',
     ),
     _ => _fail('Unknown render target: ${rest.first}'),
   };

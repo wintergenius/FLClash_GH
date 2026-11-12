@@ -4,27 +4,28 @@ import 'dart:io';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/core/interface.dart';
+import 'package:fl_clash/core/spill.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 
-class CoreController {
+/// Every [CoreHandlerInterface] method passes through unless redeclared here.
+extension type CoreController._(CoreHandlerInterface _interface)
+    implements CoreHandlerInterface {
   static CoreController? _instance;
-  late CoreHandlerInterface _interface;
 
-  CoreController._internal() {
-    if (system.isAndroid) {
-      _interface = coreLib!;
-    } else {
-      _interface = coreService!;
-    }
+  factory CoreController() {
+    return _instance ??= CoreController._(
+      system.isAndroid ? coreLib! : coreService!,
+    );
   }
 
   @visibleForTesting
-  CoreController.test(this._interface) {
-    _instance = this;
+  factory CoreController.test(CoreHandlerInterface interface) {
+    return _instance = CoreController._(interface);
   }
 
   @visibleForTesting
@@ -34,19 +35,6 @@ class CoreController {
   static void resetInstance() {
     _instance = null;
   }
-
-  factory CoreController() {
-    _instance ??= CoreController._internal();
-    return _instance!;
-  }
-
-  Future<CoreLifecycleResult> start() => _interface.start();
-
-  Future<CoreLifecycleResult> restart() => _interface.restart();
-
-  Future<CoreLifecycleResult> stop() => _interface.stop();
-
-  Future<CoreLifecycleResult> close() => _interface.close();
 
   static Future<void> ensureHomeDir() async {
     final homePath = await appPath.homeDirPath;
@@ -68,7 +56,14 @@ class CoreController {
         if (isExists) {
           continue;
         }
-        final data = await rootBundle.load('assets/data/$geoFileName');
+        final asset = 'assets/data/$geoFileName';
+        // rootBundle inflates the asset on the platform thread, which Android
+        // shares with the UI: the four files stall frames for over 100 ms.
+        if (app case final app?) {
+          await app.extractAsset(asset, geoFile.path);
+          continue;
+        }
+        final data = await rootBundle.load(asset);
         final List<int> bytes = data.buffer.asUint8List();
         await geoFile.writeAsBytes(bytes, flush: true);
       }
@@ -81,45 +76,94 @@ class CoreController {
     }
   }
 
-  Future<bool> init(int version) async {
+  Future<void> init(int version) async {
     await ensureHomeDir();
     await initGeo();
     final homeDirPath = await appPath.homeDirPath;
-    return _interface.init(InitParams(homeDir: homeDirPath, version: version));
+    await _interface.init(InitParams(homeDir: homeDirPath, version: version));
   }
 
-  FutureOr<bool> get isInit => _interface.isInit;
-
-  Future<String> validateConfig(String path) async {
-    final res = await _interface.validateConfig(path);
-    return res;
+  /// An age-encrypted config is rewritten in place into its plaintext, and a
+  /// share-link list into a config of its proxies.
+  Future<String?> validateProfile(
+    String path, [
+    String ageSecretKey = '',
+  ]) async {
+    final file = File(path);
+    if (await file.isAgeEncrypted) {
+      if (ageSecretKey.isEmpty) {
+        throw const AgeSecretKeyRequiredException();
+      }
+      await file.safeWriteAsString(
+        await _interface.decryptConfig(path, ageSecretKey),
+      );
+    }
+    final issue = await _interface.validateConfig(path);
+    if (issue == null) {
+      return null;
+    }
+    final List<Map<String, dynamic>> proxies;
+    try {
+      proxies = await _interface.convertProxies(path);
+    } on Exception {
+      return issue;
+    }
+    if (proxies.isEmpty) {
+      return issue;
+    }
+    await file.safeWriteAsString(await encodeYamlTask({'proxies': proxies}));
+    return _interface.validateConfig(path);
   }
 
-  Future<String> validateConfigWithData(String data) async {
+  Future<Map<int, String>> validateProxies(List<Map<String, dynamic>> proxies) {
+    if (proxies.isEmpty) {
+      return Future.value(const {});
+    }
+    return _interface.validateProxies(proxies);
+  }
+
+  Future<Map<int, String>> validateFilters(List<String> filters) {
+    if (filters.isEmpty) {
+      return Future.value(const {});
+    }
+    return _interface.validateFilters(filters);
+  }
+
+  Future<List<String>> encodeShareLinks(List<Map<String, dynamic>> proxies) {
+    if (proxies.isEmpty) {
+      return Future.value(const []);
+    }
+    return _interface.encodeShareLinks(proxies);
+  }
+
+  Future<List<List<Map<String, dynamic>>>> decodeShareLinks(
+    List<String> lines,
+  ) {
+    if (lines.isEmpty) {
+      return Future.value(const []);
+    }
+    return _interface.decodeShareLinks(lines);
+  }
+
+  Future<String?> validateConfigWithData(List<int> data) async {
     final path = await appPath.tempFilePath;
     final file = File(path);
-    await file.safeWriteAsString(data);
-    final res = await _interface.validateConfig(path);
-    await File(path).safeDelete();
-    return res;
+    await file.safeWriteAsBytes(data);
+    try {
+      return await _interface.validateConfig(path);
+    } finally {
+      await file.safeDelete();
+    }
   }
 
-  Future<String> updateConfig(UpdateParams updateParams) async {
-    return _interface.updateConfig(updateParams);
-  }
-
-  Future<String> setupConfig({
+  Future<void> setupConfig({
     required SetupParams params,
     Future<void> Function()? preloadInvoke,
   }) async {
     if (preloadInvoke == null) {
       return _interface.setupConfig(params);
     }
-    final (result, _) = await (
-      _interface.setupConfig(params),
-      preloadInvoke(),
-    ).wait;
-    return result;
+    await (_interface.setupConfig(params), preloadInvoke()).wait;
   }
 
   Future<List<Group>> getProxiesGroups({
@@ -140,110 +184,29 @@ class CoreController {
     );
   }
 
-  FutureOr<String> changeProxy(ChangeProxyParams changeProxyParams) async {
-    return await _interface.changeProxy(changeProxyParams);
-  }
-
-  Future<List<TrackerInfo>> getConnections() async {
-    return _interface.getConnections();
-  }
-
-  Future<void> closeConnection(String id) async {
-    await _interface.closeConnection(id);
-  }
-
-  Future<void> closeConnections() async {
-    await _interface.closeConnections();
-  }
-
-  Future<void> resetConnections() async {
-    await _interface.resetConnections();
-  }
-
-  Future<List<ExternalProvider>> getExternalProviders() async {
-    return _interface.getExternalProviders();
-  }
-
-  Future<ExternalProvider?> getExternalProvider(
-    String externalProviderName,
-  ) async {
-    return _interface.getExternalProvider(externalProviderName);
-  }
-
-  Future<String> updateGeoData(String type) {
-    return _interface.updateGeoData(type);
-  }
-
-  Future<String> sideLoadExternalProvider({
-    required String providerName,
-    required String data,
-  }) {
-    return _interface.sideLoadExternalProvider(
-      providerName: providerName,
-      data: data,
-    );
-  }
-
-  Future<String> updateExternalProvider({required String providerName}) async {
-    return _interface.updateExternalProvider(providerName);
-  }
-
-  Future<bool> startListener() async {
-    return _interface.startListener();
-  }
-
-  Future<bool> stopListener() async {
-    return _interface.stopListener();
-  }
-
-  Future<Delay?> getDelay(String url, String proxyName) async {
-    return _interface.asyncTestDelay(url, proxyName);
-  }
-
-  Future<Map<String, dynamic>> getConfig(int id) async {
-    final profilePath = await appPath.getProfilePath(id.toString());
-    final data = Map<String, dynamic>.from(
-      await _interface.getConfig(profilePath),
-    );
+  Future<Map<String, dynamic>> readConfig(int id) async {
+    final path = await appPath.getProfilePath(id.toString());
+    final data = await _interface.readConfig(path);
     data['rules'] = data['rule'];
     data.remove('rule');
     return data;
   }
 
-  Future<Traffic> getTraffic(bool onlyStatisticsProxy) async {
-    return _interface.getTraffic(onlyStatisticsProxy);
+  Future<Map<String, dynamic>> getProfileOutbounds(int id) async {
+    return _interface.getProfileOutbounds(
+      await appPath.getProfilePath(id.toString()),
+    );
   }
 
-  Future<Traffic> getTotalTraffic(bool onlyStatisticsProxy) async {
-    return _interface.getTotalTraffic(onlyStatisticsProxy);
+  Future<String> buildProfile(SetupBase base) async {
+    return readSpilledText(await _interface.buildProfile(base));
   }
 
-  Future<int> getMemory() async {
-    return _interface.getMemory();
-  }
-
-  void resetTraffic() {
-    _interface.resetTraffic();
-  }
-
-  void startLog() {
-    _interface.startLog();
-  }
-
-  void stopLog() {
-    _interface.stopLog();
-  }
-
-  Future<void> requestGc() async {
-    await _interface.forceGc();
-  }
-
-  Future<void> crash() async {
-    await _interface.crash();
-  }
-
-  Future<String> clearEffect(int profileId) async {
-    return _interface.clearEffect(profileId);
+  Future<({ProfileBase base, String path})> getProfileBase(int id) async {
+    final path = await appPath.getProfilePath(id.toString());
+    final base = await _interface.getProfileBase(path);
+    final config = Map<String, dynamic>.from(base.config)..remove('rule');
+    return (base: base.copyWith(config: config), path: path);
   }
 }
 

@@ -7,7 +7,8 @@ import 'package:fl_clash/common/dav_client.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart';
-import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+
+import '../helpers/app_paths.dart';
 
 class _FakeDAVClient extends DAVClient {
   _FakeDAVClient(super.dav, this.result, [this.onPing]);
@@ -20,21 +21,6 @@ class _FakeDAVClient extends DAVClient {
     onPing?.call();
     return result;
   }
-}
-
-class _FakePathProvider extends PathProviderPlatform {
-  final String root;
-
-  _FakePathProvider(this.root);
-
-  @override
-  Future<String?> getTemporaryPath() async => root;
-
-  @override
-  Future<String?> getApplicationSupportPath() async => root;
-
-  @override
-  Future<String?> getApplicationCachePath() async => root;
 }
 
 class _RecordedRequest {
@@ -213,11 +199,9 @@ void main() {
     late Directory root;
     HttpOverrides? testOverrides;
 
-    // appPath resolves the data directory once per process, so every test in
-    // this group has to share one root.
-    setUpAll(() {
+    setUpAll(() async {
       root = Directory.systemTemp.createTempSync('dav_client_test');
-      PathProviderPlatform.instance = _FakePathProvider(root.path);
+      await useAppPaths(root);
     });
 
     tearDownAll(() {
@@ -269,10 +253,10 @@ void main() {
       expect(await buildClient().ping(), isFalse);
     });
 
-    test('backup creates the collection and uploads the archive', () async {
+    test('upload creates the collection and puts the archive', () async {
       final archive = writeArchive(List<int>.generate(32, (index) => index));
 
-      expect(await buildClient().backup(archive.path), isTrue);
+      await buildClient().upload(archive.path);
 
       expect(server.requests.map((item) => item.method), ['MKCOL', 'PUT']);
       expect(server.requests.last.path, '/$appName/backup.zip');
@@ -289,23 +273,24 @@ void main() {
       final archive = writeArchive(const [1, 2, 3]);
       final client = buildClient();
 
-      await client.backup(archive.path);
+      await client.upload(archive.path);
 
-      expect(await client.backup(archive.path), isTrue);
+      await expectLater(client.upload(archive.path), completes);
     });
 
-    test('restore writes the downloaded archive to the backup file', () async {
+    test('download writes the remote archive to the given path', () async {
       final payload = List<int>.generate(64, (index) => index);
       server.files['/$appName/backup.zip'] = payload;
+      final target = join(root.path, 'download.zip');
 
-      expect(await buildClient().restore(), isTrue);
+      await buildClient().download(target);
 
-      expect(File(join(root.path, 'backup.zip')).readAsBytesSync(), payload);
+      expect(File(target).readAsBytesSync(), payload);
     });
 
-    test('restore reports the status the server sent', () async {
+    test('download reports the status the server sent', () async {
       await expectLater(
-        buildClient().restore(),
+        buildClient().download(join(root.path, 'missing.zip')),
         throwsA(
           isA<DAVException>().having(
             (error) => error.toString(),
@@ -325,10 +310,10 @@ void main() {
         headers: const {'location': '/moved/backup.zip'},
       ));
 
-      expect(await buildClient().restore(), isTrue);
+      await buildClient().download(join(root.path, 'moved.zip'));
 
       expect(server.requests.map((item) => item.method), ['GET', 'GET']);
-      expect(File(join(root.path, 'backup.zip')).readAsBytesSync(), payload);
+      expect(File(join(root.path, 'moved.zip')).readAsBytesSync(), payload);
     });
 
     test('credentials are sent as basic auth', () async {

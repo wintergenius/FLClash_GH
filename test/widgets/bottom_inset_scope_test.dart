@@ -1,14 +1,18 @@
-import 'package:fl_clash/widgets/float_layout.dart';
-import 'package:fl_clash/widgets/inherited.dart';
-import 'package:fl_clash/widgets/scaffold.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/ui/ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
 
 import '../helpers/test_app.dart';
 
+final _addAction = IconButtonData(
+  glyph: AppGlyphs.add,
+  tooltip: 'add',
+  onPressed: () {},
+);
+
 void main() {
   const navigationInset = 92.0;
-  const fabInset = BottomInsetScope.floatingActionButtonInset;
 
   double? contentInset;
 
@@ -21,62 +25,28 @@ void main() {
     );
   }
 
+  Widget buildWith({double inset = 0, IconButtonData? primaryAction}) {
+    return TestApp(
+      wrapInProviderScope: true,
+      includeNavigatorKey: false,
+      child: BottomInsetScope(
+        inset: inset,
+        child: Scaffold(
+          title: 'title',
+          body: contentProbe(),
+          primaryAction: primaryAction,
+        ),
+      ),
+    );
+  }
+
   setUp(() {
     contentInset = null;
-  });
-
-  testWidgets('lifts the FAB above the reserved bottom space', (tester) async {
-    Widget buildWith({double? inset}) {
-      final scaffold = CommonScaffold(
-        title: 'title',
-        body: const SizedBox(),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () {},
-          child: const Icon(Icons.add),
-        ),
-      );
-      return TestApp(
-        includeNavigatorKey: false,
-        child: inset == null
-            ? scaffold
-            : BottomInsetScope(inset: inset, child: scaffold),
-      );
-    }
-
-    await tester.pumpWidget(buildWith());
-    final baseBottom = tester.getRect(find.byType(FloatingActionButton)).bottom;
-
-    await tester.pumpWidget(buildWith(inset: navigationInset));
-    final liftedBottom = tester
-        .getRect(find.byType(FloatingActionButton))
-        .bottom;
-
-    expect(baseBottom - liftedBottom, navigationInset);
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('does not shrink the body for the reserved bottom space', (
     tester,
   ) async {
-    Widget buildWith({double inset = 0, bool withFab = false}) {
-      return TestApp(
-        includeNavigatorKey: false,
-        child: BottomInsetScope(
-          inset: inset,
-          child: CommonScaffold(
-            title: 'title',
-            body: contentProbe(),
-            floatingActionButton: withFab
-                ? FloatingActionButton(
-                    onPressed: () {},
-                    child: const Icon(Icons.add),
-                  )
-                : null,
-          ),
-        ),
-      );
-    }
-
     await tester.pumpWidget(buildWith());
     final baseBottom = tester
         .getRect(find.byKey(const ValueKey('body')))
@@ -87,99 +57,58 @@ void main() {
       tester.getRect(find.byKey(const ValueKey('body'))).bottom,
       baseBottom,
     );
-
-    await tester.pumpWidget(buildWith(inset: navigationInset, withFab: true));
-    expect(
-      tester.getRect(find.byKey(const ValueKey('body'))).bottom,
-      baseBottom,
-    );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('adds the FAB inset to the content inset of the body', (
+  testWidgets('a primary action adds nothing to the content inset', (
     tester,
   ) async {
-    Widget buildWith({double inset = 0, bool withFab = false}) {
-      return TestApp(
-        includeNavigatorKey: false,
-        child: BottomInsetScope(
-          inset: inset,
-          child: CommonScaffold(
-            title: 'title',
-            body: contentProbe(),
-            floatingActionButton: withFab
-                ? FloatingActionButton(
-                    onPressed: () {},
-                    child: const Icon(Icons.add),
-                  )
-                : null,
-          ),
-        ),
-      );
-    }
-
     await tester.pumpWidget(buildWith(inset: navigationInset));
     expect(contentInset, navigationInset);
 
-    await tester.pumpWidget(buildWith(inset: navigationInset, withFab: true));
-    expect(contentInset, navigationInset + fabInset);
-
-    await tester.pumpWidget(buildWith(withFab: true));
-    expect(contentInset, fabInset);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('does not reserve FAB space on TV', (tester) async {
     await tester.pumpWidget(
-      TestApp(
-        includeNavigatorKey: false,
-        child: BottomInsetScope(
-          inset: navigationInset,
-          child: CommonScaffold(
-            title: 'title',
-            isTV: true,
-            body: contentProbe(),
-            floatingActionButton: FloatingActionButton(
-              onPressed: () {},
-              child: const Icon(Icons.add),
-            ),
-          ),
-        ),
-      ),
+      buildWith(inset: navigationInset, primaryAction: _addAction),
     );
-
     expect(contentInset, navigationInset);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('float layout stacks its own inset on the inherited one', (
-    tester,
-  ) async {
+  testWidgets('runs the body under the system bar and leaves it to the end '
+      'of the content, read above the scaffold or below it', (tester) async {
+    const systemBar = 24.0;
+    tester.view
+      ..devicePixelRatio = 1
+      ..padding = const FakeViewPadding(bottom: systemBar);
+    addTearDown(tester.view.reset);
+    double? aboveInset;
+    double? belowInset;
     await tester.pumpWidget(
       TestApp(
+        wrapInProviderScope: true,
         includeNavigatorKey: false,
-        child: BottomInsetScope(
-          inset: navigationInset,
-          child: Scaffold(
-            body: FloatLayout(
-              isTV: false,
-              floatingWidget: FloatWrapper(
-                child: FloatingActionButton(
-                  onPressed: () {},
-                  child: const Icon(Icons.save),
-                ),
+        child: Builder(
+          builder: (context) {
+            aboveInset = context.bottomInset;
+            return Scaffold(
+              title: 'title',
+              body: Builder(
+                builder: (context) {
+                  belowInset = context.bottomInset;
+                  return Container(key: const ValueKey('body'));
+                },
               ),
-              child: contentProbe(),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
 
-    expect(contentInset, navigationInset + fabInset);
-    final stackBottom = tester.getRect(find.byType(FloatLayout)).bottom;
-    final fabBottom = tester.getRect(find.byType(FloatWrapper)).bottom;
-    expect(stackBottom - fabBottom, navigationInset);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('body'))).bottom,
+      tester.view.physicalSize.height,
+    );
+    expect(aboveInset, systemBar);
+    expect(belowInset, systemBar);
     expect(tester.takeException(), isNull);
   });
 }

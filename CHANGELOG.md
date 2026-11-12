@@ -1,10 +1,21 @@
 # Changelog
 
+## v1.0.5 (2026-11-12)
+
+**Features**
+
+- **upstream,update** Merge upstream FlClash v0.9.3 (mihomo v1.19.33, prism_ui, gomobile) and wire in-app self-update to wintergenius/FLClash_GH (v093mrg)
+
+**Bug Fixes**
+
+- **android,core** Seamless AmneziaWG network roaming (validated network priority, 464xlat route fingerprint, ClientBind rebind + keepalive, StartTun socket protection) (ghandf1)
+- **android,config** Disable VpnService HTTP proxy by default with v1.0.4 upgrade migration, enable store-fake-ip, and clean bypass domain defaults (ghandf2)
+
 ## v1.0.4 (2026-11-11)
 
 **Features**
 
-- **profiles,desktop,android** Persistent x-hwid subscription headers, unlimited expiry display, deep-link profile deduplication, Windows out-of-the-box TUN/gVisor/protocol registration, and Android MTU 1360 + DNS hijacking defaults (oi44m2)
+- **profiles,desktop,android** Add persistent x-hwid headers, unlimited expiry display, deep-link profile deduplication, Windows out-of-the-box TUN/gVisor + flclash:// installer registration, and Android MTU 1360 + DNS hijacking defaults (39ef701)
 
 ## v1.0.3 (2026-09-15)
 
@@ -34,6 +45,125 @@
 **Bug Fixes**
 
 - **desktop** Reset open connections after applying per-app lists (ab2d6b4)
+
+## v0.9.3 (2026-11-04)
+
+**Features**
+
+- **connections** Merged requests and connections; quick edit lists (52b975f)
+- **ui** iOS 27 transitions, press and text selection; smoother pages (bb47f2c)
+- **update** Download and install updates in the app (b8f84b3)
+- **core** One delay test timeout; VPN crash and startup fixes (2a5a42c)
+
+**Bug Fixes**
+
+- **core** Auto-select leaves an unusable first node at once (7d5db7e)
+- **access** Keep selections a filter hides (63aaf6d)
+
+## v0.9.2 (2026-10-24)
+
+**Features**
+
+- **access** Access control state shown in a bar at the bottom (e8aac17)
+- **config** Optional general overrides; settings apply sooner (5d6552d)
+- **dashboard** IP quality cached for 3 days; simpler Android dashboard (8176cce)
+- Update the core to mihomo v1.19.33 (0817c3b)
+- **tray** Colored tray status icons; monochrome option on macOS (bbfafde)
+- **desktop** Sidebar blur; Windows fixes; keeps system proxies FlClash didn't set (6928521)
+- **profiles** Profile QR codes, phone-to-TV links, more proxy fields (eaaf3e3)
+- **proxies** Add proxies to local proxies; adjustable delay test timeout (0f9f89c)
+- **theme** Higher-contrast dark mode and a refreshed app icon (a4fc067)
+- **ui** iOS-style docked search and menus; bar buttons lift on hover (0d98a9d)
+- **ui** iOS-style switches, stretchy sheets, menus and long-press reordering (ae902ed)
+- **ui** Pages scroll under the Android navigation bar (4837fb3)
+- **core** Clear the DNS cache by hand or on network change (09e7e56)
+
+**Bug Fixes**
+
+- **android** Opening the app no longer reloads a running VPN (99b3381)
+
+**Performance**
+
+- **editor** Smoother editor for large files and in sheets (7035edd)
+
+## v0.9.1 (2026-10-17)
+
+**Breaking Changes**
+
+- **network** Desktop TUN keys follow the profile unless picked; changed values carry over (cb08088)
+
+**Features**
+
+- **l10n** French, Spanish and Korean translations (f43755c)
+- **android** No more Firebase analytics or crash reporting (bc72bba)
+- **network** Per-key desktop TUN settings; system proxy and tray fixes (cb08088)
+- **theme** Redesigned theme colors and color styles (5eafd7a)
+- **dashboard** A redesigned dashboard around the current exit (9bd258f)
+- **profiles** Profile-detail resources and include-all in custom groups (0bac500)
+- **proxies** Proxy groups as cards, group tabs as chips (2ea52fd)
+- **views** Sortable tables for connections, requests and DNS (da6fb0a)
+- **ui** Optional two-tier Liquid Glass and slide-to-pick menus (7c9627f)
+- **ui** iOS-style surfaces, alerts and sheets; clearer TV focus (9bd2286)
+
+**Bug Fixes**
+
+- **ui** Fix pasting and Chinese input in text fields (5607f70)
+- **core** Large profiles no longer crash; downloads trust core CAs (5984c16)
+
+**Performance**
+
+- **android** Smoother Android UI while the proxy is busy (2201c19)
+
+## v0.9.0 (2026-10-14)
+
+**Breaking Changes**
+
+- **views** DNS and NTP override toggles are removed; picked keys apply to every profile (491fae1)
+- **database** Custom overwrites are removed; rebuild them as custom profiles (1677024)
+
+**Features**
+
+- **views** Per-key DNS, NTP, sniffer and TUN settings (491fae1)
+- **profiles** Custom profiles (3abda78)
+- **ui** Stacked sheets, context menus and a sort mode (8c43053)
+- **providers** DNS, Hosts and ports apply without a restart (532ebf0)
+- **android** Launcher shortcuts and one-step on-demand access (d3fa225)
+- **core** Share link import and mrs rule sets (2fa2f7f)
+
+**Bug Fixes**
+
+- **database** Unreadable settings no longer block startup or restores (1677024)
+- **desktop** Windows and Linux desktop fixes (94a25f4)
+- **core,helper** The elevated Core only answers its owner (d780cb8)
+
+## v0.8.99 (2026-10-03)
+
+**Features**
+
+- **editor** Editor word wrap and snippets (e131675)
+- **dashboard** More dashboard cards (e62afb7)
+- **views** Hide timed-out nodes and search every list (8378c70)
+- **ui** Sidebar, floating dock and drag to go back (841d603)
+- **ui** New app glyphs, empty states and theme page (ee6a497)
+- **overwrite** Invalid override warnings and rule presets (46fb7fe)
+- **config** DNS query log and per-key DNS/NTP overrides (a390a42)
+- **core** Proxied service checks and outbound IP risk (8068e68)
+- **platform** Tray hotkeys, node delays and a delay test (1e97716)
+
+**Bug Fixes**
+
+- **core** A changed resource link is now used by the next sync and by auto update (ff23f30)
+- **core** DNS lookups no longer fail on networks that report no DNS servers (e55f6d1)
+- **proxies** Smaller icons in icon-only group headers (786a6ab)
+- **core,android** Push notifications reconnect in Doze (1e9955d)
+- **backup,database** Restores never apply halfway (bee8f24)
+
+## v0.8.98 (2026-09-14)
+
+**Bug Fixes**
+
+- **resources** Refresh the geo file size and time after an update finishes (c5bf5bd)
+- **core** Keep the core running while Windows sleeps with the app suspended (60f371a)
 
 ## v0.8.97 (2026-09-10)
 

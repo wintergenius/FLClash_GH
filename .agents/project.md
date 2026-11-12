@@ -1,24 +1,27 @@
 # Project Context
 
-FlClash is a multi-platform proxy client based on ClashMeta (mihomo), built with Flutter. It supports Android, Windows, macOS, and Linux, using a Material You design with Surfboard-like UI.
+FlClash is a multi-platform proxy client based on ClashMeta (mihomo), built with Flutter. It supports Android, Windows, macOS, and Linux, drawing its own components in the `prism_ui` package: a color system of its own with Apple's Human Interface interaction conventions.
 
 ## Version Notes
 
-- Release CI pins Flutter 3.47.1. Local SDK may diverge, so trust the CI
-  version as the source of truth for release builds.
-- Dart SDK constraint: `>=3.8.0 <4.0.0`. The lower bound is load-bearing and
-  must not be raised to the Dart version the SDK actually ships; see
-  Dependency Ceilings.
+- Flutter stays on the 3.47.x line. Release CI pins 3.47.6 and is the source
+  of truth for release builds; `.fvmrc` and local SDKs may sit on another 3.47
+  patch. The editor in `plugins/code_forge` came from `code_forge` 10.14.0, which
+  needs Dart 3.13.2, so the CI pin cannot go below Flutter 3.47.2.
+- Before moving the pin, walk `flutter-upgrade.md`: it lists the workarounds tied to
+  the current SDK, such as Impeller disabled on the Intel macOS release build.
+- The Dart SDK lower bound in `pubspec.yaml` sets the package language
+  version. `flutter analyze` excludes `lib/**/generated/**`, so a raise is
+  proven by `flutter test`, which parses the generated code, not by analyze.
 
 ## Forked Dependencies
 
-Three `pubspec.yaml` dependencies are pinned to a fork — `window_manager` by tag,
-the other two by commit SHA. All three
-forks live under `chen08209`, the same account that owns this repository, so they
-are maintained in-house rather than tracked from a third party: advancing a pin
-is a local decision, and there is no external maintainer to wait on for the patch
-itself. What each fork still waits on is the *upstream* fix that would let the
-pin be dropped entirely, recorded below.
+One `pubspec.yaml` dependency is pinned to a fork by commit SHA. The fork lives
+under `chen08209`, the same account that owns this repository, so it is
+maintained in-house rather than tracked from a third party: advancing a pin is a
+local decision, and there is no external maintainer to wait on for the patch
+itself. What the fork still waits on is the *upstream* fix that would let the pin
+be dropped entirely, recorded below.
 
 Each entry records what the fork changes and what has to be true before it can go
 back to the published package, so a future upgrade does not have to rediscover it.
@@ -29,25 +32,11 @@ of the same number:
 diff -ru ~/.pub-cache/hosted/pub.dev/<name>-<version> ~/.pub-cache/git/<name>-<sha>
 ```
 
-`window_manager` — `chen08209/window_manager`, path `packages/window_manager`,
-version 0.5.1, pinned to the tag `v0.5.1-flclash.1` because the fork carries
-commits of its own rather than a single patch on top of a release.
-
-- `windows/window_manager_plugin.cpp`: with `titleBarStyle: hidden` a maximized
-  window uses the monitor work area (`GetMonitorInfo().rcWork`) instead of
-  upstream's `adjustNCCALCSIZE` border fudge, so it no longer covers the taskbar.
-- `linux/window_manager_plugin.cc`: GTK drops the placement of an unmapped
-  window, so `hide` saves the geometry and the `map-event` handler applies it
-  again. Upstream only moves the window while it is hidden, which a window
-  manager is free to ignore — the window then reappears wherever it decides to
-  place it, which on this repository's Linux runner is every appearance after the
-  first, because `my_application.cc` never shows the toplevel itself.
-- Adds `setWindowCornerPreference` (Windows) and `handleShouldTerminate` /
-  `onWindowShouldTerminate` (macOS). These lived in a local `window_ext` plugin
-  until they moved here; `lib/manager/window_manager.dart` and
-  `macos/Runner/AppDelegate.swift` are the callers.
-- Drop the fork once upstream carries all three. The added APIs have call sites,
-  so this is not a pin change alone.
+The `window_manager` fork (`chen08209/window_manager`, tag `v0.5.1-flclash.3`)
+was replaced by the in-repo `plugins/window` package; the behaviors it carried
+(work-area maximize with a hidden title bar on Windows, geometry restore on
+re-map on Linux, corner preference, terminate and activate events) live there
+now, see the window plugin section of `architecture.md`.
 
 `launch_at_startup` — `chen08209/launch_at_startup`, version 0.5.1.
 
@@ -58,68 +47,41 @@ commits of its own rather than a single patch on top of a release.
   directly, and upstream's `^2.0.0` constraint cannot co-resolve with it.
 - Drop the fork when upstream publishes a release that accepts `win32_registry` 3.x.
 
-`yaml_writer` — `chen08209/yaml_writer`, version 2.1.0.
+The `yaml_writer` fork (`chen08209/yaml_writer`) was replaced by
+`lib/common/yaml_writer.dart`. Its key quoting let keys such as `!a`, `'a` or
+`0x1F` reach the Core's yaml.v3 as a parse error or a non-string; a merge key
+`<<` stays plain on purpose, because `package:yaml` keeps it as an ordinary key
+and the Core applies the merge.
 
-- Adds `StringNode.quoteKey()` and applies it to map keys in `lib/src/node.dart`.
-  Upstream quotes values but emits keys verbatim, so a profile key needing quotes
-  is written as invalid YAML.
-- Drop the fork once upstream quotes map keys by the same
-  `isValidUnquotedString` rule it already applies to values.
+The `code_forge` fork (`chen08209/code_forge`) is frozen: its Dart code now lives
+in the in-repo `plugins/code_forge` package and its Rust code in the `editor/`
+module of `plugins/rust_api`, both trimmed to what FlClash uses.
+`plugins/code_forge/README.md` records what was kept and what was removed;
+upstream's MIT notice stays in `plugins/code_forge/LICENSE`.
 
 ## Dependency Ceilings
 
-Several dependencies cannot be advanced from this repository, and re-running
-`flutter pub outdated` will keep listing them. The blocker is upstream in every
-case, so treat the list as resolved-until-the-ceiling-moves rather than as debt:
+`flutter pub outdated` lists only upstream-held entries, so treat them as
+resolved-until-the-ceiling-moves rather than as debt:
 
-`freezed` is pinned exactly to `3.2.6-dev.1`, which is a pre-release *ahead* of
-the newest stable `3.2.5`. It is not a stale pin and must not be "fixed" by
-moving to `3.2.5`: stable `3.2.5` requires `analyzer >=9.0.0 <11.0.0`, while the
-pinned Flutter SDK resolves `analyzer` 12. `3.2.6-dev.1` is the only published
-freezed release that accepts `analyzer` 12. Move to a stable release only once
-one exists that accepts the analyzer the SDK actually resolves.
+- `intl` is intentionally unbounded (`any`), which is not a bound this repository
+  sets.
 
-The `>=3.8.0` Dart lower bound is a language-version floor, not a stale minimum.
-Dart 3.13 makes `final` on a parameter an error, and `freezed` still emits it in
-the constructors it generates for every collection field it backs with a private
-field (`const _LogsState({final  List<Log> logs = const [], ...})`); 4.0.0-dev.3
-emits it too. A pubspec's lower bound sets the package language version, so
-`>=3.8.0` keeps that generated code legal while the SDK itself runs 3.13. Raising
-the bound makes every `*.freezed.dart` fail to parse, which `flutter analyze`
-does not catch because `lib/**/generated/**` is excluded. Raise it only once
-freezed stops emitting the modifier.
+The `riverpod` set, `build_runner`, `drift_dev` and `intl_utils` resolve to their
+latest releases. Two are held back:
 
-One `analyzer` ceiling holds most of the remaining `flutter pub outdated` list.
-The newest `build_runner`, `drift_dev`, `intl_utils`, `test`, and
-`riverpod_generator` all require `analyzer` 13; `test` 1.31.2 additionally
-requires `test_api` 0.7.13, while `flutter_test` from the pinned SDK depends on
-`test_api` 0.7.12. Raising any of those bounds therefore fails version solving.
+- `freezed` 4.0.2 needs `analyzer` 14, while `intl_utils` 2.8.16 still requires
+  `analyzer` ^13. It moves once `intl_utils` accepts analyzer 14.
+- `test` 1.32.0 needs `test_api` 0.7.14, and `flutter_test` on Flutter 3.47 pins
+  0.7.12. It moves with the SDK.
 
-The `riverpod` chain is the visible symptom. It is held at
-`riverpod`/`flutter_riverpod` 3.3.2, `riverpod_annotation` 4.0.3, and
-`riverpod_generator` 4.0.4 as one rigid unit, because `riverpod_annotation`
-4.0.3 depends on `riverpod` exactly 3.3.2: the runtime cannot move without the
-generator, and the generator cannot move without `analyzer` 13. Retry the whole
-set after a Flutter SDK bump raises `test_api`, not before.
+When an upgrade fails version solving, record the blocker here with
+what has to change upstream before the pin can move, so the next
+`flutter pub outdated` run does not rediscover it.
 
-`intl` is intentionally unbounded (`any`) and `material_color_utilities` is
-resolved by the SDK; neither is a bound this repository sets.
-
-`isolate_contactor` is discontinued and `isolate_manager` is several majors
-behind. Both arrive through `re_editor`, which pins `isolate_manager: ^4.1.5+1`
-and is already at its own latest release. Nothing in this repository can advance
-them.
-
-`CorePalette` is deprecated in `material_color_utilities` in favour of
-`DynamicScheme`/`CorePalettes`, but `dynamic_color` 1.9.0 — its newest release —
-still exposes only `DynamicColorPlugin.getCorePalette()`, which returns the
-deprecated type. There is no migration available from this repository short of
-calling the `io.material.plugins/dynamic_color` method channel directly and
-decoding the palette int list by hand, which is not worth owning. The deprecated
-type is therefore confined to `GlobalState._initDynamicColor`, which converts it
-to the two plain seed colours the app actually consumes; everything downstream
-sees `DynamicColorSeeds`. Revisit when `dynamic_color` ships a non-deprecated
-accessor — only that one function has to change.
+`_initDynamicColor` in `lib/bootstrap.dart` takes the system's seeds and accent color from `DynamicColorPlugin`,
+in the plugin at `plugins/dynamic_color`, which keeps the native side out of the UI library's
+own tree. Everything downstream sees `DynamicColorSeeds`.
 
 ## Build Dependencies
 

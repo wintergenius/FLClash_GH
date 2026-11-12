@@ -1,7 +1,9 @@
 //go:build !(darwin || linux) || android
 
-package main
+package core
 
 func initOwnership(homeDir string) {}
 
 func scheduleReclaimOwnership() {}
+
+func reclaimDirOwnership(path string) {}

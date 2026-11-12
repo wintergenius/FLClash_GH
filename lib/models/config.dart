@@ -1,19 +1,16 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import 'models.dart';
+import 'package:prism_ui/prism_ui.dart';
 
 part 'generated/config.freezed.dart';
 part 'generated/config.g.dart';
 
 const defaultBypassDomain = [
-  '*zhihu.com',
-  '*zhimg.com',
-  '*jd.com',
-  '100ime-iat-api.xfyun.cn',
-  '*360buyimg.com',
   'localhost',
   '*.local',
   '127.*',
@@ -28,6 +25,55 @@ const defaultBypassDomain = [
   '192.168.*',
 ];
 
+const defaultUserAgents = ['clash-verge/v2.4.2', 'ClashforWindows/0.19.23'];
+
+const defaultFilters = [
+  Filter(
+    label: 'Hong Kong',
+    regex: r'(?i)🇭🇰|港|(?<![a-z])hk(?![a-z])|hong\s*kong',
+  ),
+  Filter(
+    label: 'Taiwan',
+    regex: r'(?i)🇹🇼|台湾|台灣|台北|新北|彰化|(?<![a-z])tw(?![a-z])|taiwan',
+  ),
+  Filter(
+    label: 'Japan',
+    regex: r'(?i)🇯🇵|日本|东京|東京|大阪|埼玉|(?<![a-z])jp(?![a-z])|japan|tokyo|osaka',
+  ),
+  Filter(
+    label: 'Singapore',
+    regex: r'(?i)🇸🇬|新加坡|狮城|獅城|(?<![a-z])sg(?![a-z])|singapore',
+  ),
+  Filter(
+    label: 'United States',
+    regex:
+        r'(?i)🇺🇸|美国|美國|美西|美东|美東|洛杉矶|圣何塞|西雅图|硅谷|纽约'
+        r'|(?<![a-z])usa?(?![a-z])|united\s*states',
+  ),
+  Filter(
+    label: 'South Korea',
+    regex: r'(?i)🇰🇷|韩国|韓國|首尔|首爾|(?<![a-z])kr(?![a-z])|korea|seoul',
+  ),
+  Filter(
+    label: 'United Kingdom',
+    regex:
+        r'(?i)🇬🇧|英国|英國|伦敦|倫敦|(?<![a-z])(uk|gb)(?![a-z])'
+        r'|united\s*kingdom|britain|london',
+  ),
+  Filter(
+    label: 'Remaining Traffic',
+    regex: r'(?i)剩余|剩餘|已用|流量\s*[:：]|traffic|remaining',
+  ),
+  Filter(label: 'Expiry Date', regex: r'(?i)到期|过期|過期|有效期|expir'),
+  Filter(label: 'Traffic Reset', regex: r'(?i)重置|reset'),
+  Filter(
+    label: 'Website & Notices',
+    regex:
+        r'(?i)官网|官網|网址|網址|域名|公告|套餐|客服|群组|群組|频道|頻道'
+        r'|website|telegram|(?<![a-z])tg(?![a-z])',
+  ),
+];
+
 const defaultAppSettingProps = AppSettingProps();
 const defaultVpnProps = VpnProps();
 const defaultAuthenticationProps = AuthenticationProps();
@@ -35,30 +81,163 @@ const defaultNetworkProps = NetworkProps();
 const defaultProxiesStyleProps = ProxiesStyleProps();
 const defaultWindowProps = WindowProps();
 const defaultAccessControlProps = AccessControlProps();
+const defaultAndroidAccessControlProps = AccessControlProps(
+  enable: true,
+  mode: AccessControlMode.rejectSelected,
+  rejectList: defaultAndroidRussianRejectPackages,
+  autoRejectRussian: true,
+);
+const defaultAndroidVpnProps = VpnProps(
+  accessControlProps: defaultAndroidAccessControlProps,
+);
+VpnProps get platformDefaultVpnProps =>
+    system.isAndroid ? defaultAndroidVpnProps : defaultVpnProps;
 const defaultThemeProps = ThemeProps(primaryColor: defaultPrimaryColor);
 
+HotKeyAction _defaultHotKeyAction(HotAction action, PhysicalKeyboardKey key) {
+  return HotKeyAction(
+    action: action,
+    key: key.usbHidUsage,
+    modifiers: const {KeyboardModifier.control, KeyboardModifier.alt},
+  );
+}
+
+// Windows reports AltGr as Ctrl+Alt, and every letter is an AltGr character
+// on some layout (@ on German Q, ś on Polish S), so a default there would fire
+// while the user types.
+final List<HotKeyAction> defaultHotKeyActions = system.isWindows
+    ? const []
+    : [
+        _defaultHotKeyAction(HotAction.view, PhysicalKeyboardKey.keyV),
+        _defaultHotKeyAction(HotAction.start, PhysicalKeyboardKey.keyS),
+        _defaultHotKeyAction(HotAction.mode, PhysicalKeyboardKey.keyM),
+        _defaultHotKeyAction(HotAction.proxy, PhysicalKeyboardKey.keyP),
+        _defaultHotKeyAction(HotAction.delayTest, PhysicalKeyboardKey.keyD),
+      ];
+
 const List<DashboardWidget> defaultDashboardWidgets = [
+  DashboardWidget.currentOutbound,
   DashboardWidget.networkSpeed,
-  DashboardWidget.systemProxyButton,
-  DashboardWidget.tunButton,
   DashboardWidget.outboundMode,
-  DashboardWidget.networkDetection,
-  DashboardWidget.trafficUsage,
+  DashboardWidget.vpnButton,
+  DashboardWidget.networkTakeover,
   DashboardWidget.intranetIp,
+  DashboardWidget.serviceStatus,
+  DashboardWidget.profiles,
+  DashboardWidget.proxyGroups,
+  DashboardWidget.connectionStats,
 ];
 
-List<DashboardWidget> dashboardWidgetsSafeFormJson(
+/// A phone starts without the VPN switch and the diagnostic cards, which stay
+/// addable. The field default keeps the shared list because it must be const.
+final List<DashboardWidget> platformDefaultDashboardWidgets = system.isAndroid
+    ? const [
+        DashboardWidget.currentOutbound,
+        DashboardWidget.networkSpeed,
+        DashboardWidget.outboundMode,
+        DashboardWidget.profiles,
+        DashboardWidget.proxyGroups,
+      ]
+    : defaultDashboardWidgets;
+
+const _legacyDefaultDashboardWidgets = {
+  'networkSpeed',
+  'systemProxyButton',
+  'tunButton',
+  'outboundMode',
+  'networkDetection',
+  'trafficUsage',
+  'intranetIp',
+};
+
+/// The run time has no replacement: it moved onto the current outbound card,
+/// as did the outbound IP, whose card became the intranet one.
+const _legacyDashboardWidgets = {
+  'networkDetection': DashboardWidget.intranetIp,
+  'outboundModeV2': DashboardWidget.outboundMode,
+  'systemProxyButton': DashboardWidget.networkTakeover,
+  'tunButton': DashboardWidget.networkTakeover,
+  'connections': DashboardWidget.connectionStats,
+  'requests': DashboardWidget.connectionStats,
+  'dnsQueries': DashboardWidget.connectionStats,
+  'trafficUsage': DashboardWidget.networkSpeed,
+};
+
+const _retiredDashboardWidgets = {
+  'runTime',
+  'overrideDnsButton',
+  'overrideNtpButton',
+};
+
+/// The current outbound card cannot be removed: a list without it predates it.
+List<DashboardWidget> dashboardWidgetsFromJson(
   List<dynamic>? dashboardWidgets,
 ) {
-  return decodeOrRestoreDefault(
-    'dashboard widgets',
-    () =>
-        dashboardWidgets
-            ?.map((e) => $enumDecode(_$DashboardWidgetEnumMap, e))
-            .toList() ??
-        defaultDashboardWidgets,
-    () => defaultDashboardWidgets,
-  );
+  if (dashboardWidgets == null) {
+    return platformDefaultDashboardWidgets;
+  }
+  final byName = DashboardWidget.values.asNameMap();
+  if (dashboardWidgets.contains(DashboardWidget.currentOutbound.name)) {
+    return dashboardWidgets
+        .map((e) => _legacyDashboardWidgets[e] ?? byName[e])
+        .nonNulls
+        .toSet()
+        .toList();
+  }
+  final names = {
+    for (final name in dashboardWidgets)
+      name == 'outboundModeV2' ? DashboardWidget.outboundMode.name : name,
+  };
+  if (names.length == _legacyDefaultDashboardWidgets.length &&
+      names.containsAll(_legacyDefaultDashboardWidgets)) {
+    return platformDefaultDashboardWidgets;
+  }
+  final kept = dashboardWidgets
+      .map((e) => _legacyDashboardWidgets[e] ?? byName[e])
+      .nonNulls;
+  if (kept.isEmpty &&
+      !dashboardWidgets.every(_retiredDashboardWidgets.contains)) {
+    return platformDefaultDashboardWidgets;
+  }
+  return {DashboardWidget.currentOutbound, ...kept}.toList();
+}
+
+Object? _readSidebarExpanded(Map<dynamic, dynamic> json, String key) {
+  return json.containsKey(key) ? json[key] : json['showLabel'];
+}
+
+Object? _readTabAnimation(Map<dynamic, dynamic> json, String key) {
+  if (json.containsKey(key)) {
+    return json[key];
+  }
+  return switch (json['isAnimateToPage']) {
+    true => TabAnimation.slide.name,
+    false => TabAnimation.fade.name,
+    _ => null,
+  };
+}
+
+Object? _readUserAgents(Map<dynamic, dynamic> json, String key) {
+  if (json.containsKey(key)) {
+    return json[key];
+  }
+  final legacy = json['customUserAgent'];
+  if (legacy is! String) {
+    return null;
+  }
+  final custom = legacy.trim();
+  if (custom.isEmpty || defaultUserAgents.contains(custom)) {
+    return null;
+  }
+  return [...defaultUserAgents, custom];
+}
+
+@freezed
+abstract class Filter with _$Filter {
+  const factory Filter({required String label, required String regex}) =
+      _Filter;
+
+  factory Filter.fromJson(Map<String, Object?> json) => _$FilterFromJson(json);
 }
 
 @freezed
@@ -66,7 +245,7 @@ abstract class AppSettingProps with _$AppSettingProps {
   const factory AppSettingProps({
     String? locale,
     @Default(defaultDashboardWidgets)
-    @JsonKey(fromJson: dashboardWidgetsSafeFormJson)
+    @JsonKey(fromJson: dashboardWidgetsFromJson)
     List<DashboardWidget> dashboardWidgets,
     @Default(false) bool onlyStatisticsProxy,
     @Default(true) bool showNotificationStopAction,
@@ -75,20 +254,35 @@ abstract class AppSettingProps with _$AppSettingProps {
     @Default(false) bool autoRun,
     @Default(false) bool openLogs,
     @Default(true) bool closeConnections,
-    @Default(defaultTestUrl) String testUrl,
-    @Default(true) bool isAnimateToPage,
+    @Default(RequestFeed.live) RequestFeed requestFeed,
+    @Default(defaultDelayTestTimeout) int delayTestTimeout,
+    @Default(TabAnimation.fade)
+    @JsonKey(readValue: _readTabAnimation)
+    TabAnimation tabAnimation,
+    @Default(true) bool floatingNavigationBar,
     @Default(true) bool autoCheckUpdate,
-    @Default(false) bool showLabel,
-    @Default(false) bool disclaimerAccepted,
-    @Default(false) bool crashlyticsTip,
-    @Default(false) bool crashlytics,
+    @Default(true)
+    @JsonKey(readValue: _readSidebarExpanded)
+    bool sidebarExpanded,
+    @Default(0) int acceptedDisclaimerVersion,
     @Default(true) bool minimizeOnExit,
     @Default(false) bool hidden,
     @Default(false) bool developerMode,
     @Default(RestoreStrategy.compatible) RestoreStrategy restoreStrategy,
     @Default(true) bool showTrayTitle,
+    @Default(true) bool monochromeTrayIcon,
     @Default(true) bool checkCertificate,
-    @Default('') String customUserAgent,
+    @Default(defaultUserAgents)
+    @JsonKey(readValue: _readUserAgents)
+    List<String> userAgents,
+    @Default(defaultFilters) List<Filter> filters,
+    @Default(false) bool hideIp,
+    @Default(false) bool editorLineWrap,
+    @Default(EditorFontSize.standard) EditorFontSize editorFontSize,
+    @Default([]) List<String> serviceOrder,
+    @Default([]) List<String> disabledServices,
+    @Default({}) Map<String, Map<String, double>> tableColumnWidths,
+    @Default({}) Map<String, String> recordGroupings,
   }) = _AppSettingProps;
 
   factory AppSettingProps.fromJson(Map<String, Object?> json) =>
@@ -98,11 +292,7 @@ abstract class AppSettingProps with _$AppSettingProps {
     if (json == null) {
       return defaultAppSettingProps;
     }
-    return decodeOrRestoreDefault(
-      'app settings',
-      () => AppSettingProps.fromJson(json),
-      () => defaultAppSettingProps,
-    );
+    return decodeSalvaging('app settings', json, AppSettingProps.fromJson);
   }
 }
 
@@ -113,6 +303,8 @@ abstract class AccessControlProps with _$AccessControlProps {
     @Default(AccessControlMode.rejectSelected) AccessControlMode mode,
     @Default([]) List<String> acceptList,
     @Default([]) List<String> rejectList,
+    @Default(false) bool autoRejectRussian,
+    @Default([]) List<String> autoRejectExcludedList,
     @Default(AccessSortType.none) AccessSortType sort,
     @Default(true) bool isFilterSystemApp,
     @Default(true) bool isFilterNonInternetApp,
@@ -123,6 +315,8 @@ abstract class AccessControlProps with _$AccessControlProps {
 }
 
 extension AccessControlPropsExt on AccessControlProps {
+  bool get hasPackages => acceptList.isNotEmpty || rejectList.isNotEmpty;
+
   List<String> get currentList => switch (mode) {
     AccessControlMode.acceptSelected => acceptList,
     AccessControlMode.rejectSelected => rejectList,
@@ -141,23 +335,31 @@ abstract class WindowProps with _$WindowProps {
     @Default(0) double height,
     double? top,
     double? left,
+    double? scale,
   }) = _WindowProps;
 
   factory WindowProps.fromJson(Map<String, Object?>? json) =>
       json == null ? const WindowProps() : _$WindowPropsFromJson(json);
 }
 
-extension WindowPropsExt on WindowProps {
-  Size get _size => Size(width, height);
+/// Four dashboard columns at full density beside the expanded sidebar, with
+/// room for the Windows and Linux title bar.
+const defaultWindowSize = Size(1280, 880);
 
-  Size get size => _size.isEmpty ? const Size(680, 580) : _size;
+extension WindowPropsExt on WindowProps {
+  Size? get savedSize {
+    final size = Size(width, height);
+    return size.isEmpty ? null : size;
+  }
+
+  Size get size => savedSize ?? defaultWindowSize;
 }
 
 @freezed
 abstract class VpnProps with _$VpnProps {
   const factory VpnProps({
     @Default(true) bool enable,
-    @Default(true) bool systemProxy,
+    @Default(false) bool systemProxy,
     @Default(false) bool ipv6,
     @Default(true) bool allowBypass,
     @Default(true) bool dnsHijacking,
@@ -187,12 +389,33 @@ extension AuthenticationPropsExt on AuthenticationProps {
       enable && username.isNotEmpty ? ['$username:$password'] : [];
 }
 
+/// Protects the local `mixed-port` (`127.0.0.1:7890`) on Android with an
+/// ephemeral per-session credential when LAN sharing is off and the user has
+/// not configured explicit proxy authentication, preventing other apps on the
+/// phone from probing `127.0.0.1:7890` to discover VPN node exit IPs.
+List<String> resolveLocalProxyCredentials({
+  required AuthenticationProps authentication,
+  required bool allowLan,
+  String? androidSessionSecret,
+}) {
+  final explicit = authentication.credentials;
+  if (explicit.isNotEmpty) {
+    return explicit;
+  }
+  if (!allowLan &&
+      androidSessionSecret != null &&
+      androidSessionSecret.isNotEmpty) {
+    return ['gh:$androidSessionSecret'];
+  }
+  return const [];
+}
+
 @freezed
 abstract class NetworkProps with _$NetworkProps {
   const factory NetworkProps({
     @Default(true) bool systemProxy,
     @Default(defaultBypassDomain) List<String> bypassDomain,
-    @Default(RouteMode.config) RouteMode routeMode,
+    @Default(true) bool bypassPrivateRoute,
     @Default(true) bool autoSetSystemDns,
     @Default(false) bool appendSystemDns,
     @Default(defaultAuthenticationProps) AuthenticationProps authentication,
@@ -202,14 +425,40 @@ abstract class NetworkProps with _$NetworkProps {
       json == null ? const NetworkProps() : _$NetworkPropsFromJson(json);
 }
 
+/// Reads the styles named `standard`, `icon` and `none` before they became
+/// [ProxiesIconStyle.filled], [ProxiesIconStyle.plain] and
+/// [ProxiesIconStyle.hidden].
+ProxiesIconStyle proxiesIconStyleSafeFromJson(Object? iconStyle) {
+  return switch (iconStyle) {
+    'filled' || 'standard' => ProxiesIconStyle.filled,
+    'plain' || 'icon' => ProxiesIconStyle.plain,
+    'hidden' || 'none' => ProxiesIconStyle.hidden,
+    _ => ProxiesIconStyle.filled,
+  };
+}
+
+ProxyCardType proxyCardTypeSafeFromJson(Object? cardType) {
+  return switch (cardType) {
+    'loose' || 'expand' => ProxyCardType.loose,
+    'standard' || 'shrink' => ProxyCardType.standard,
+    'compact' || 'min' => ProxyCardType.compact,
+    _ => ProxyCardType.standard,
+  };
+}
+
 @freezed
 abstract class ProxiesStyleProps with _$ProxiesStyleProps {
   const factory ProxiesStyleProps({
-    @Default(ProxiesType.tab) ProxiesType type,
+    @Default(ProxiesType.list) ProxiesType type,
     @Default(ProxiesSortType.none) ProxiesSortType sortType,
     @Default(ProxiesLayout.standard) ProxiesLayout layout,
-    @Default(ProxiesIconStyle.standard) ProxiesIconStyle iconStyle,
-    @Default(ProxyCardType.expand) ProxyCardType cardType,
+    @Default(ProxiesIconStyle.filled)
+    @JsonKey(fromJson: proxiesIconStyleSafeFromJson)
+    ProxiesIconStyle iconStyle,
+    @Default(ProxyCardType.standard)
+    @JsonKey(fromJson: proxyCardTypeSafeFromJson)
+    ProxyCardType cardType,
+    @Default(false) bool hideTimeoutProxies,
   }) = _ProxiesStyleProps;
 
   factory ProxiesStyleProps.fromJson(Map<String, Object?>? json) => json == null
@@ -228,15 +477,45 @@ abstract class TextScale with _$TextScale {
       _$TextScaleFromJson(json);
 }
 
+// Older configs name one of Material's nine scheme variants instead.
+Object? _readColorStyle(Map<dynamic, dynamic> json, String key) {
+  if (json.containsKey(key)) {
+    return json[key];
+  }
+  return switch (json['schemeVariant']) {
+    'monochrome' => ColorStyle.monochrome.name,
+    'tonalSpot' || 'neutral' => ColorStyle.soft.name,
+    _ => null,
+  };
+}
+
+// Older configs say whether glass is on.
+Object? _readLiquidGlass(Map<dynamic, dynamic> json, String key) {
+  return switch (json[key]) {
+    true => LiquidGlassMode.standard.name,
+    false => LiquidGlassMode.none.name,
+    final value => value,
+  };
+}
+
 @freezed
 abstract class ThemeProps with _$ThemeProps {
   const factory ThemeProps({
     int? primaryColor,
     @Default(defaultPrimaryColors) List<int> primaryColors,
-    @Default(ThemeMode.dark) ThemeMode themeMode,
-    @Default(DynamicSchemeVariant.content) DynamicSchemeVariant schemeVariant,
+    @Default(ThemeMode.system) ThemeMode themeMode,
+    @Default(ColorStyle.vivid)
+    @JsonKey(readValue: _readColorStyle)
+    ColorStyle colorStyle,
     @Default(false) bool pureBlack,
+    @Default(false) bool sidebarBlur,
+    @Default(LiquidGlassMode.none)
+    @JsonKey(readValue: _readLiquidGlass)
+    LiquidGlassMode liquidGlass,
     @Default(TextScale()) TextScale textScale,
+    // `fontFamily` held the names of a removed enum, which old configs may
+    // still carry.
+    @JsonKey(name: 'systemFontFamily') String? fontFamily,
   }) = _ThemeProps;
 
   factory ThemeProps.fromJson(Map<String, Object?> json) =>
@@ -246,11 +525,7 @@ abstract class ThemeProps with _$ThemeProps {
     if (json == null) {
       return defaultThemeProps;
     }
-    return decodeOrRestoreDefault(
-      'theme settings',
-      () => ThemeProps.fromJson(json),
-      () => defaultThemeProps,
-    );
+    return decodeSalvaging('theme settings', json, ThemeProps.fromJson);
   }
 }
 
@@ -258,7 +533,6 @@ abstract class ThemeProps with _$ThemeProps {
 abstract class Config with _$Config {
   const factory Config({
     int? currentProfileId,
-    @Default(false) bool overrideDns,
     @Default([]) List<HotKeyAction> hotKeyActions,
     @JsonKey(fromJson: AppSettingProps.safeFromJson)
     @Default(defaultAppSettingProps)
@@ -268,20 +542,94 @@ abstract class Config with _$Config {
     @Default(defaultVpnProps) VpnProps vpnProps,
     @JsonKey(fromJson: ThemeProps.safeFromJson) required ThemeProps themeProps,
     @Default(defaultProxiesStyleProps) ProxiesStyleProps proxiesStyleProps,
-    @Default(defaultWindowProps) WindowProps windowProps,
+    // A new key opens every window once at defaultWindowSize.
+    @Default(defaultWindowProps)
+    @JsonKey(name: 'windowGeometry')
+    WindowProps windowProps,
     @Default(defaultClashConfig) PatchClashConfig patchClashConfig,
     @Default([]) List<String> excludeSSIDs,
   }) = _Config;
 
-  factory Config.fromJson(Map<String, Object?> json) => _$ConfigFromJson(json);
+  factory Config.fromJson(Map<String, Object?> json) =>
+      decodeSalvaging('config', json, Config.strictFromJson);
+
+  factory Config.strictFromJson(Map<String, Object?> json) =>
+      _withLegacyOverrideDns(
+        _$ConfigFromJson(_withLegacyTestUrl(_withLegacyRouteMode(json))),
+        json,
+      );
 
   factory Config.realFromJson(Map<String, Object?>? json) {
     if (json == null) {
       return Config(
         themeProps: defaultThemeProps,
         patchClashConfig: defaultPlatformClashConfig,
+        hotKeyActions: defaultHotKeyActions,
+        vpnProps: platformDefaultVpnProps,
+        appSettingProps: AppSettingProps(
+          dashboardWidgets: platformDefaultDashboardWidgets,
+        ),
       );
     }
-    return _$ConfigFromJson(json);
+    return Config.fromJson(json);
   }
+}
+
+const _legacyOverrideDnsKey = 'overrideDns';
+
+/// An off `overrideDns` left a profile's own DNS section alone.
+Config _withLegacyOverrideDns(Config config, Map<String, Object?> json) {
+  if (!json.containsKey(_legacyOverrideDnsKey)) {
+    return config;
+  }
+  final keys = json[_legacyOverrideDnsKey] == true
+      ? config.patchClashConfig.dnsOverrideKeys.intersection(
+          DnsOverrideKey.normalProfileKeys,
+        )
+      : <DnsOverrideKey>{};
+  return config.copyWith.patchClashConfig(dnsOverrideKeys: keys);
+}
+
+/// The test URL moved from the app settings into the general overrides.
+Map<String, Object?> _withLegacyTestUrl(Map<String, Object?> json) {
+  final app = json['appSettingProps'];
+  final testUrl = app is Map ? app['testUrl'] : null;
+  final clash = json['patchClashConfig'] ?? const <String, Object?>{};
+  if (testUrl is! String ||
+      testUrl.isEmpty ||
+      clash is! Map ||
+      clash.containsKey(GeneralOverrideKey.testUrl.path)) {
+    return json;
+  }
+  return {
+    ...json,
+    'patchClashConfig': {
+      ...Map<String, Object?>.from(clash),
+      GeneralOverrideKey.testUrl.path: testUrl,
+    },
+  };
+}
+
+Map<String, Object?> _withLegacyRouteMode(Map<String, Object?> json) {
+  final network = json['networkProps'];
+  if (network is! Map ||
+      !network.containsKey('routeMode') ||
+      network.containsKey('bypassPrivateRoute')) {
+    return json;
+  }
+  final bypassPrivate = network['routeMode'] == 'bypassPrivate';
+  final clash = json['patchClashConfig'];
+  final tun = clash is Map ? clash['tun'] : null;
+  return {
+    ...json,
+    'networkProps': {
+      ...Map<String, Object?>.from(network),
+      'bypassPrivateRoute': bypassPrivate,
+    },
+    if (bypassPrivate && clash is Map && tun is Map)
+      'patchClashConfig': {
+        ...Map<String, Object?>.from(clash),
+        'tun': {...Map<String, Object?>.from(tun), 'route-address': <String>[]},
+      },
+  };
 }

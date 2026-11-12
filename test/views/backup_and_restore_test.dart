@@ -1,16 +1,21 @@
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/features/form/form.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/ui/ui.dart';
 import 'package:fl_clash/views/backup_and_restore.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../helpers/glyph_finders.dart';
 import '../helpers/test_app.dart';
 import '../helpers/test_profiles.dart';
+import '../helpers/host_scaffold.dart';
 
 const _existing = DAVProps(
   uri: 'https://dav.example.com/remote',
@@ -35,7 +40,7 @@ void main() {
 
   tearDown(() => container.dispose());
 
-  Future<void> pumpDialog(WidgetTester tester, Widget dialog) async {
+  Future<void> pumpForm(WidgetTester tester, Widget form) async {
     tester.view.physicalSize = const Size(1200, 1400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -44,9 +49,31 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: TestApp(child: Scaffold(body: dialog)),
+        child: TestApp(
+          child: Builder(
+            builder: (context) => HostScaffold(
+              body: TextButton(
+                onPressed: () =>
+                    showFormSheet<void>(context: context, builder: (_) => form),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
       ),
     );
+    await tester.pump();
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+  }
+
+  Finder field(String title) => find.descendant(
+    of: find.widgetWithText(FormRow, title),
+    matching: find.byType(TextFormField),
+  );
+
+  Future<void> save(WidgetTester tester) async {
+    await tester.tap(find.widgetWithText(TextButton, 'Save'));
     await tester.pumpAndSettle();
   }
 
@@ -66,7 +93,7 @@ void main() {
           container: container,
           child: TestApp(
             child: Builder(
-              builder: (context) => Scaffold(
+              builder: (context) => HostScaffold(
                 body: TextButton(
                   onPressed: () async {
                     chosen = await showDialog<RestoreOption>(
@@ -107,24 +134,30 @@ void main() {
     });
   });
 
-  group('WebDAVFormDialog', () {
+  group('WebDAVForm', () {
     testWidgets('rejects an empty form and stores nothing', (tester) async {
-      await pumpDialog(tester, const WebDAVFormDialog());
+      await pumpForm(tester, const WebDAVForm());
 
-      await tester.tap(find.widgetWithText(TextButton, 'Save'));
-      await tester.pumpAndSettle();
+      await save(tester);
 
       expect(container.read(davSettingProvider), isNull);
-      expect(find.byType(WebDAVFormDialog), findsOneWidget);
+      expect(find.byType(WebDAVForm), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ErrorBanner),
+          matching: find.text('Please enter a valid WebDAV address'),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('names the password toggle by what pressing it does', (
       tester,
     ) async {
-      await pumpDialog(tester, const WebDAVFormDialog());
+      await pumpForm(tester, const WebDAVForm());
 
       final toggle = find.descendant(
-        of: find.widgetWithIcon(TextFormField, Icons.password),
+        of: find.widgetWithText(FormRow, 'Password'),
         matching: find.byType(IconButton),
       );
       expect(tester.widget<IconButton>(toggle).tooltip, 'Show password');
@@ -136,65 +169,46 @@ void main() {
     });
 
     testWidgets('rejects a malformed address', (tester) async {
-      await pumpDialog(tester, const WebDAVFormDialog());
+      await pumpForm(tester, const WebDAVForm());
 
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.link),
-        'not-a-url',
-      );
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.account_circle),
-        'alice',
-      );
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.password),
-        'secret',
-      );
-      await tester.tap(find.widgetWithText(TextButton, 'Save'));
-      await tester.pumpAndSettle();
+      await tester.enterText(field('Address'), 'not-a-url');
+      await tester.enterText(field('Account'), 'alice');
+      await tester.enterText(field('Password'), 'secret');
+      await save(tester);
 
       expect(container.read(davSettingProvider), isNull);
+      expect(find.byType(WebDAVForm), findsOneWidget);
     });
 
     testWidgets('stores a valid binding with the default file name', (
       tester,
     ) async {
-      await pumpDialog(tester, const WebDAVFormDialog());
+      await pumpForm(tester, const WebDAVForm());
 
       await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.link),
+        field('Address'),
         'https://dav.example.com/remote',
       );
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.account_circle),
-        'alice',
-      );
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.password),
-        'secret',
-      );
-      await tester.tap(find.widgetWithText(TextButton, 'Save'));
-      await tester.pumpAndSettle();
+      await tester.enterText(field('Account'), 'alice');
+      await tester.enterText(field('Password'), 'secret');
+      await save(tester);
 
       final dav = container.read(davSettingProvider);
       expect(dav?.uri, 'https://dav.example.com/remote');
       expect(dav?.user, 'alice');
       expect(dav?.password, 'secret');
       expect(dav?.fileName, defaultDavFileName);
+      expect(find.byType(WebDAVForm), findsNothing);
     });
 
     testWidgets('editing preserves the previously chosen file name', (
       tester,
     ) async {
       container.read(davSettingProvider.notifier).update((_) => _existing);
-      await pumpDialog(tester, const WebDAVFormDialog(dav: _existing));
+      await pumpForm(tester, const WebDAVForm(dav: _existing));
 
-      await tester.enterText(
-        find.widgetWithIcon(TextFormField, Icons.account_circle),
-        'bob',
-      );
-      await tester.tap(find.widgetWithText(TextButton, 'Save'));
-      await tester.pumpAndSettle();
+      await tester.enterText(field('Account'), 'bob');
+      await save(tester);
 
       final dav = container.read(davSettingProvider);
       expect(dav?.user, 'bob');
@@ -204,30 +218,32 @@ void main() {
     testWidgets('offers delete only when editing an existing binding', (
       tester,
     ) async {
-      await pumpDialog(tester, const WebDAVFormDialog());
-      expect(find.widgetWithText(TextButton, 'Delete'), findsNothing);
+      await pumpForm(tester, const WebDAVForm());
+      expect(find.widgetWithText(FormRow, 'Delete'), findsNothing);
+      Navigator.of(tester.element(find.byType(WebDAVForm))).pop();
+      await tester.pumpAndSettle();
 
-      await pumpDialog(tester, const WebDAVFormDialog(dav: _existing));
-      expect(find.widgetWithText(TextButton, 'Delete'), findsOneWidget);
+      await pumpForm(tester, const WebDAVForm(dav: _existing));
+      expect(find.widgetWithText(FormRow, 'Delete'), findsOneWidget);
     });
 
     testWidgets('delete clears the stored binding', (tester) async {
       container.read(davSettingProvider.notifier).update((_) => _existing);
-      await pumpDialog(tester, const WebDAVFormDialog(dav: _existing));
+      await pumpForm(tester, const WebDAVForm(dav: _existing));
 
-      await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+      await tester.tap(find.widgetWithText(FormRow, 'Delete'));
       await tester.pumpAndSettle();
 
       expect(container.read(davSettingProvider), isNull);
     });
 
     testWidgets('toggles password visibility', (tester) async {
-      await pumpDialog(tester, const WebDAVFormDialog(dav: _existing));
+      await pumpForm(tester, const WebDAVForm(dav: _existing));
 
-      expect(find.byIcon(Icons.visibility), findsOneWidget);
-      await tester.tap(find.byIcon(Icons.visibility));
+      expect(find.byGlyph(AppGlyphs.eye), findsOneWidget);
+      await tester.tap(find.byGlyph(AppGlyphs.eye));
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+      expect(find.byGlyph(AppGlyphs.eyeOff), findsOneWidget);
     });
   });
 }

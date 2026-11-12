@@ -7,12 +7,19 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/state.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:path/path.dart' show join;
 
 class Request {
   late final Dio dio;
   late final Dio _clashDio;
+
+  /// Refuses an untrusted certificate even with the certificate check turned
+  /// off, because what it fetches is installed, on Windows as administrator.
+  @visibleForTesting
+  late final Dio releaseDio;
   String? userAgent;
 
   ProviderReader? _read;
@@ -29,15 +36,48 @@ class Request {
         final client = HttpClient();
         client.findProxy = (Uri uri) {
           client.userAgent = globalState.ua;
-          final read = _read;
-          if (read == null) {
-            return 'DIRECT';
-          }
-          return FlClashHttpOverrides.findProxyForReader(read, uri);
+          return _findProxy(uri);
         };
         return client;
       },
     );
+    releaseDio = Dio(BaseOptions(headers: {'User-Agent': browserUa}));
+    releaseDio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        return HttpClient()
+          ..badCertificateCallback = ((_, _, _) => false)
+          ..findProxy = _findProxy;
+      },
+    );
+  }
+
+  String _findProxy(Uri uri) {
+    final read = _read;
+    if (read == null) {
+      return 'DIRECT';
+    }
+    return FlClashHttpOverrides.findProxyForReader(read, uri);
+  }
+
+  Future<Response<T>> _download<T>(String url, ResponseType responseType) {
+    final target = downloadTarget(url);
+    final cancelToken = CancelToken();
+    return _clashDio
+        .getUri<T>(
+          target.uri,
+          options: Options(responseType: responseType, headers: target.headers),
+          cancelToken: cancelToken,
+        )
+        .timeout(
+          downloadTimeoutDuration,
+          onTimeout: () {
+            cancelToken.cancel();
+            throw DioException.receiveTimeout(
+              timeout: downloadTimeoutDuration,
+              requestOptions: RequestOptions(path: url),
+            );
+          },
+        );
   }
 
   Future<Map<String, String>?> _subscriptionHeaders(String url) async {
@@ -56,6 +96,7 @@ class Request {
       final initialHeaders = await _subscriptionHeaders(url);
 
       for (var hop = 0; hop <= 3; hop++) {
+        final target = downloadTarget(currentUrl);
         final attachSubHeaders = initialHeaders != null &&
             currentUri != null &&
             currentUri.scheme.toLowerCase() == 'https' &&
@@ -63,16 +104,33 @@ class Request {
             currentUri.authority.toLowerCase() ==
                 initialUri.authority.toLowerCase();
 
-        final response = await _clashDio.get<Uint8List>(
-          currentUrl,
-          options: Options(
-            responseType: ResponseType.bytes,
-            headers: attachSubHeaders ? initialHeaders : null,
-            followRedirects: false,
-            validateStatus: (status) =>
-                status != null && status >= 200 && status < 400,
-          ),
-        );
+        final mergedHeaders = <String, Object>{
+          ...target.headers,
+          if (attachSubHeaders) ...initialHeaders,
+        };
+        final cancelToken = CancelToken();
+        final response = await _clashDio
+            .getUri<Uint8List>(
+              target.uri,
+              options: Options(
+                responseType: ResponseType.bytes,
+                headers: mergedHeaders.isEmpty ? null : mergedHeaders,
+                followRedirects: false,
+                validateStatus: (status) =>
+                    status != null && status >= 200 && status < 400,
+              ),
+              cancelToken: cancelToken,
+            )
+            .timeout(
+              downloadTimeoutDuration,
+              onTimeout: () {
+                cancelToken.cancel();
+                throw DioException.receiveTimeout(
+                  timeout: downloadTimeoutDuration,
+                  requestOptions: RequestOptions(path: currentUrl),
+                );
+              },
+            );
 
         final statusCode = response.statusCode ?? 0;
         if (statusCode >= 300 && statusCode < 400) {
@@ -113,12 +171,7 @@ class Request {
 
   Future<Response<String>> getTextResponseForUrl(String url) async {
     try {
-      return await _clashDio.get<String>(
-        url,
-        options: Options(
-          responseType: ResponseType.plain,
-        ),
-      );
+      return await _download<String>(url, ResponseType.plain);
     } catch (e) {
       commonPrint.log(
         'getTextResponseForUrl error ${compactError(e)}',
@@ -128,84 +181,131 @@ class Request {
     }
   }
 
+  /// Null when this build is current; throws when GitHub cannot be asked.
   Future<Map<String, dynamic>?> checkForUpdate() async {
+    final release = await latestRelease();
+    final remoteVersion = release['tag_name'] as String;
+    final version = globalState.packageInfo.version;
+    final hasUpdate =
+        compareVersions(remoteVersion.replaceAll('v', ''), version) > 0;
+    return hasUpdate ? release : null;
+  }
+
+  /// The release page redirect still answers once the hourly API quota is spent.
+  Future<Map<String, dynamic>> latestRelease() async {
     try {
-      final response = await dio.get(
+      final response = await dio.get<Map<String, dynamic>>(
         'https://api.github.com/repos/$repository/releases/latest',
         options: Options(responseType: ResponseType.json),
       );
-      if (response.statusCode != 200) return null;
-      final data = response.data as Map<String, dynamic>;
-      final remoteVersion = data['tag_name'];
-      final version = globalState.packageInfo.version;
-      final hasUpdate =
-          compareVersions(remoteVersion.replaceAll('v', ''), version) > 0;
-      if (!hasUpdate) return null;
-      return data;
-    } catch (e) {
-      commonPrint.log('checkForUpdate failed', logLevel: LogLevel.warning);
-      return null;
+      return response.data!;
+    } on DioException catch (error) {
+      commonPrint.log(
+        'latest release API failed: ${compactError(error)}',
+        logLevel: LogLevel.warning,
+      );
     }
+    final response = await dio.get<void>(
+      'https://github.com/$repository/releases/latest',
+      options: Options(
+        followRedirects: false,
+        validateStatus: (status) => status != null && status < 400,
+      ),
+    );
+    final location = response.headers.value(HttpHeaders.locationHeader);
+    final segments = Uri.tryParse(location ?? '')?.pathSegments ?? const [];
+    final tagIndex = segments.indexOf('tag') + 1;
+    if (tagIndex == 0 || tagIndex >= segments.length) {
+      throw FormatException('No release tag in the redirect', location);
+    }
+    return {'tag_name': segments[tagIndex]};
   }
 
-  final Map<String, IpInfo Function(Map<String, dynamic>)> _ipInfoSources = {
-    'https://ipwho.is': IpInfo.fromIpWhoIsJson,
-    'https://api.myip.com': IpInfo.fromMyIpJson,
-    'https://ipapi.co/json': IpInfo.fromIpApiCoJson,
-    'https://ident.me/json': IpInfo.fromIdentMeJson,
-    'http://ip-api.com/json': IpInfo.fromIpAPIJson,
-    'https://api.ip.sb/geoip': IpInfo.fromIpSbJson,
-    'https://ipinfo.io/json': IpInfo.fromIpInfoIoJson,
-  };
-
-  Future<Result<IpInfo?>> checkIp({CancelToken? cancelToken}) async {
-    var failureCount = 0;
-    final token = cancelToken ?? CancelToken();
-    final futures = _ipInfoSources.entries.map((source) async {
-      final Completer<Result<IpInfo?>> completer = Completer();
-      void handleFailRes() {
-        if (!completer.isCompleted && failureCount == _ipInfoSources.length) {
-          completer.complete(Result.success(null));
-        }
-      }
-
-      final future = dio
-          .get<Map<String, dynamic>>(
-            source.key,
-            cancelToken: token,
-            options: Options(responseType: ResponseType.json),
-          )
-          .timeout(const Duration(seconds: 10));
-      unawaited(
-        future
-            .then((res) {
-              if (res.statusCode == HttpStatus.ok && res.data != null) {
-                completer.complete(Result.success(source.value(res.data!)));
-                return;
-              }
-              commonPrint.log('checkIp data empty', logLevel: LogLevel.info);
-              failureCount++;
-              handleFailRes();
-            })
-            .catchError((e) {
-              failureCount++;
-              if (e is DioException && e.type == DioExceptionType.cancel) {
-                completer.complete(Result.error('cancelled'));
-                return;
-              }
-              commonPrint.log('checkIp error $e', logLevel: LogLevel.warning);
-              handleFailRes();
-            }),
+  Future<String> downloadVerifiedRelease({
+    required String tag,
+    required String name,
+    required String directory,
+    ProgressCallback? onReceiveProgress,
+    CancelToken? cancelToken,
+  }) async {
+    final sums = await releaseDio.getUri<String>(
+      releaseAssetUri(tag, releaseChecksumsName),
+      options: Options(responseType: ResponseType.plain),
+      cancelToken: cancelToken,
+    );
+    final expected = releaseChecksum(sums.data ?? '', name);
+    if (expected == null) {
+      throw ReleaseNotVerifiedException(name);
+    }
+    final path = join(directory, name);
+    final uri = releaseAssetUri(tag, name);
+    if (app case final android?) {
+      await android.downloadFile(
+        uri,
+        path,
+        title: name,
+        onReceiveProgress: onReceiveProgress ?? (_, _) {},
+        cancelToken: cancelToken ?? CancelToken(),
       );
-      return completer.future;
-    });
-    final res = await Future.any(futures);
-    token.cancel();
-    return res;
+    } else {
+      await releaseDio.downloadUri(
+        uri,
+        path,
+        onReceiveProgress: onReceiveProgress,
+        cancelToken: cancelToken,
+      );
+    }
+    if (await fileSha256(path) != expected) {
+      throw ReleaseNotVerifiedException(name);
+    }
+    return path;
   }
 }
 
 final request = Request();
+
+/// Some subscription servers send a gzip or zlib body without saying so in
+/// Content-Encoding, which is the only signal dart:io decompresses on.
+Uint8List decompressUnlabeled(Uint8List bytes) {
+  final codec = switch (bytes) {
+    [0x1f, 0x8b, ...] => gzip,
+    [0x78, final flags, ...] when (0x78 << 8 | flags) % 31 == 0 => zlib,
+    _ => null,
+  };
+  if (codec == null) {
+    return bytes;
+  }
+  try {
+    return Uint8List.fromList(codec.decode(bytes));
+  } on FormatException {
+    return bytes;
+  }
+}
+
+/// dart:io turns [Uri.userInfo] into Basic credentials still percent-encoded.
+@visibleForTesting
+({Uri uri, Map<String, Object> headers}) downloadTarget(String url) {
+  final uri = url.webUri ?? Uri.parse(url);
+  if (uri.userInfo.isEmpty) {
+    return (uri: uri, headers: const {});
+  }
+  final credentials = uri.userInfo.split(':').map(_decodeUserInfo).join(':');
+  return (
+    uri: uri.replace(userInfo: ''),
+    headers: {
+      HttpHeaders.authorizationHeader:
+          'Basic ${base64.encode(utf8.encode(credentials))}',
+    },
+  );
+}
+
+String _decodeUserInfo(String value) {
+  try {
+    return Uri.decodeComponent(value);
+  } on ArgumentError {
+    return value;
+  }
+}
 
 String? getFileNameForDisposition(String? disposition) {
   if (disposition == null) return null;

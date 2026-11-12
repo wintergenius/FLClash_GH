@@ -62,14 +62,6 @@ class DavSetting extends _$DavSetting with AutoDisposeNotifierMixin {
 }
 
 @riverpod
-class OverrideDns extends _$OverrideDns with AutoDisposeNotifierMixin {
-  @override
-  bool build() {
-    return false;
-  }
-}
-
-@riverpod
 class HotKeyActions extends _$HotKeyActions with AutoDisposeNotifierMixin {
   @override
   List<HotKeyAction> build() {
@@ -112,7 +104,6 @@ Config _config(Ref ref) {
   final themeProps = ref.watch(themeSettingProvider);
   final currentProfileId = ref.watch(currentProfileIdProvider);
   final davProps = ref.watch(davSettingProvider);
-  final overrideDns = ref.watch(overrideDnsProvider);
   final hotKeyActions = ref.watch(hotKeyActionsProvider);
   final proxiesStyleProps = ref.watch(proxiesStyleSettingProvider);
   final patchClashConfig = ref.watch(patchClashConfigProvider);
@@ -125,12 +116,27 @@ Config _config(Ref ref) {
     themeProps: themeProps,
     currentProfileId: currentProfileId,
     davProps: davProps,
-    overrideDns: overrideDns,
     hotKeyActions: hotKeyActions,
     proxiesStyleProps: proxiesStyleProps,
     patchClashConfig: patchClashConfig,
     excludeSSIDs: excludeSSIDs,
   );
+}
+
+void writeConfig(Ref ref, Config config) {
+  ref.read(appSettingProvider.notifier).value = config.appSettingProps;
+  ref.read(windowSettingProvider.notifier).value = config.windowProps;
+  ref.read(vpnSettingProvider.notifier).value = config.vpnProps;
+  ref.read(networkSettingProvider.notifier).value = config.networkProps;
+  ref.read(themeSettingProvider.notifier).value = config.themeProps;
+  ref.read(currentProfileIdProvider.notifier).value = config.currentProfileId;
+  ref.read(davSettingProvider.notifier).value = config.davProps;
+  ref.read(hotKeyActionsProvider.notifier).value = config.hotKeyActions;
+  ref.read(proxiesStyleSettingProvider.notifier).value =
+      config.proxiesStyleProps;
+  ref.read(patchClashConfigProvider.notifier).value = config.patchClashConfig
+      .ensureControllerSecret();
+  ref.read(excludeSSIDsProvider.notifier).value = config.excludeSSIDs;
 }
 
 List<Override> buildConfigOverrides(Config config) {
@@ -144,7 +150,6 @@ List<Override> buildConfigOverrides(Config config) {
       (_, _) => config.currentProfileId,
     ),
     davSettingProvider.overrideWithBuild((_, _) => config.davProps),
-    overrideDnsProvider.overrideWithBuild((_, _) => config.overrideDns),
     hotKeyActionsProvider.overrideWithBuild((_, _) => config.hotKeyActions),
     proxiesStyleSettingProvider.overrideWithBuild(
       (_, _) => config.proxiesStyleProps,

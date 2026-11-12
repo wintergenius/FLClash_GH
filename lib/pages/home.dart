@@ -3,11 +3,12 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/manager/app_manager.dart';
 import 'package:fl_clash/models/common.dart';
 import 'package:fl_clash/providers/providers.dart';
+import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-typedef OnSelected = void Function(int index);
+import 'package:prism_ui/prism_ui.dart';
 
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -17,8 +18,10 @@ class HomePage extends ConsumerWidget {
     final hasViewSize = ref.watch(
       viewSizeProvider.select((size) => !size.isEmpty),
     );
+    // The window is revealed on this frame; under the Windows sidebar
+    // material an unpainted body shows black until the next frame lands.
     if (!hasViewSize) {
-      return const SizedBox.shrink();
+      return ColoredBox(color: SurfaceLevel.page.colorOf(context.colorScheme));
     }
     return HomeBackScopeContainer(
       child: AppSidebarContainer(
@@ -63,52 +66,115 @@ class _HomeShell extends ConsumerWidget {
     final state = ref.watch(navigationStateProvider);
     final isMobile = state.viewMode == ViewMode.mobile;
     final navigationItems = state.navigationItems;
-    return Material(
-      color: context.colorScheme.surface,
+    final floating = ref.watch(
+      appSettingProvider.select((state) => state.floatingNavigationBar),
+    );
+    return Surface(
+      color: SurfaceLevel.page.colorOf(context.colorScheme),
       child: Column(
         children: [
-          Flexible(
-            flex: 1,
-            child: FocusTraversalGroup(
-              policy: PageTraversalPolicy(),
-              child: MediaQuery.removePadding(
-                removeTop: false,
-                removeBottom: isMobile,
-                removeLeft: isMobile,
-                removeRight: isMobile,
-                context: context,
-                child: child,
-              ),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: FocusTraversalGroup(
+                    policy: PageTraversalPolicy(),
+                    child: BottomInsetScope(
+                      inset: isMobile && floating
+                          ? NavigationDock.insetOf(context)
+                          : 0,
+                      child: _BodyPadding(isMobile: isMobile, child: child),
+                    ),
+                  ),
+                ),
+                PositionedDirectional(
+                  start: 0,
+                  end: 0,
+                  bottom: 0,
+                  child: AnimatedVisibility.bottomNavigation(
+                    visible: isMobile && floating,
+                    child: BarItemPresence.held(
+                      child: _NavigationPadding(
+                        child: NavigationDock(
+                          destinations: [
+                            for (final item in navigationItems)
+                              NavigationDockDestination(
+                                glyph: item.glyph,
+                                label: item.label.label,
+                              ),
+                          ],
+                          selectedIndex: state.currentIndex,
+                          onSelected: (index) {
+                            _handleToPage(navigationItems[index].label, ref);
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           AnimatedVisibility.bottomNavigation(
-            visible: isMobile,
-            child: MediaQuery.removePadding(
-              removeTop: true,
-              removeBottom: false,
-              removeLeft: true,
-              removeRight: true,
-              context: context,
-              child: NavigationBarTheme(
-                data: _NavigationBarDefaultsM3(context),
-                child: NavigationBar(
-                  destinations: [
-                    for (final item in navigationItems)
-                      NavigationDestination(
-                        icon: item.icon,
-                        label: item.label.label,
+            visible: isMobile && !floating,
+            child: _NavigationPadding(
+              child: NavigationBar(
+                destinations: [
+                  for (final (index, item) in navigationItems.indexed)
+                    NavigationDestination(
+                      icon: AnimatedGlyph(
+                        glyph: item.glyph,
+                        filled: index == state.currentIndex,
                       ),
-                  ],
-                  onDestinationSelected: (index) {
-                    _handleToPage(navigationItems[index].label, ref);
-                  },
-                  selectedIndex: state.currentIndex,
-                ),
+                      label: item.label.label,
+                    ),
+                ],
+                selectedIndex: state.currentIndex,
+                onDestinationSelected: (index) {
+                  _handleToPage(navigationItems[index].label, ref);
+                },
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _BodyPadding extends StatelessWidget {
+  const _BodyPadding({required this.isMobile, required this.child});
+
+  final bool isMobile;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery.removePadding(
+      removeTop: false,
+      removeBottom: isMobile,
+      removeLeft: isMobile,
+      removeRight: isMobile,
+      context: context,
+      child: child,
+    );
+  }
+}
+
+class _NavigationPadding extends StatelessWidget {
+  const _NavigationPadding({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery.removePadding(
+      removeTop: true,
+      removeBottom: false,
+      removeLeft: true,
+      removeRight: true,
+      context: context,
+      child: child,
     );
   }
 }
@@ -127,26 +193,37 @@ class _NavigationPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scopedView = PageFocusScope(child: view);
+    // The global key lives here, not on the view: the same view also opens as
+    // a pushed page, which may overlap a pop of itself.
+    final scopedView = PageFocusScope(
+      child: KeyedSubtree(key: GlobalObjectKey(item.label), child: view),
+    );
     final keptView = KeepScope(
       key: ValueKey(item.label),
-      keep: item.keep,
       child: isMobile
           ? scopedView
           : Navigator(
               key: ValueKey('${item.label.name}_navigator'),
-              pages: [MaterialPage(child: scopedView)],
+              pages: [RootPage(child: scopedView)],
               onDidRemovePage: (_) {},
             ),
     );
     return Consumer(
       builder: (_, ref, child) {
         final isActive = ref.watch(
-          currentPageLabelProvider.select((label) => label == item.label),
+          shownPageLabelProvider.select((label) => label == item.label),
         );
+        // A kept-alive page off screen still ticks its animations, and
+        // each tick asks for a frame.
         return PageActivityScope(
           isActive: isActive,
-          child: ExcludeFocus(excluding: !isActive, child: child!),
+          child: TickerMode(
+            enabled: isActive,
+            child: ExcludeFocus(
+              excluding: !isActive,
+              child: KeyboardInsetHold(child: child!),
+            ),
+          ),
         );
       },
       child: keptView,
@@ -170,6 +247,9 @@ class _HomePageView extends ConsumerStatefulWidget {
 class _HomePageViewState extends ConsumerState<_HomePageView> {
   late PageController _pageController;
 
+  List<int>? _order;
+  int _slide = 0;
+
   @override
   void initState() {
     super.initState();
@@ -184,14 +264,24 @@ class _HomePageViewState extends ConsumerState<_HomePageView> {
   @override
   void didUpdateWidget(covariant _HomePageView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.navigationItems.length != widget.navigationItems.length) {
+    if (!listEquals(
+      _labelsOf(oldWidget.navigationItems),
+      _labelsOf(widget.navigationItems),
+    )) {
+      _order = null;
       _updatePageController();
     }
   }
 
-  int get _pageIndex {
-    final pageLabel = ref.read(currentPageLabelProvider);
-    return widget.navigationItems.indexWhere((item) => item.label == pageLabel);
+  static List<PageLabel> _labelsOf(List<NavigationItem> items) => [
+    for (final item in items) item.label,
+  ];
+
+  int get _pageIndex => _indexOf(ref.read(currentPageLabelProvider));
+
+  int _indexOf(PageLabel pageLabel) {
+    final shown = shownPageLabelOf(pageLabel, widget.navigationItems);
+    return widget.navigationItems.indexWhere((item) => item.label == shown);
   }
 
   Future<void> _toPage(
@@ -201,22 +291,43 @@ class _HomePageViewState extends ConsumerState<_HomePageView> {
     if (!mounted) {
       return;
     }
-    final index = widget.navigationItems.indexWhere(
-      (item) => item.label == pageLabel,
-    );
+    final index = _indexOf(pageLabel);
     if (index == -1) {
       return;
     }
-    final isAnimateToPage = ref.read(appSettingProvider).isAnimateToPage;
+    final tabAnimation = ref.read(appSettingProvider).tabAnimation;
     final isMobile = ref.read(isMobileViewProvider);
-    if (isAnimateToPage && isMobile && !ignoreAnimateTo) {
-      await _pageController.animateToPage(
-        index,
-        duration: kTabScrollDuration,
-        curve: Curves.easeOut,
-      );
-    } else {
+    final slide = ++_slide;
+    final page = _pageController.hasClients
+        ? _pageController.page?.round() ?? index
+        : index;
+    final current = _order?[page] ?? page;
+    if (_order != null) {
+      setState(() => _order = null);
+      _pageController.jumpToPage(current);
+    }
+    if (!isMobile || ignoreAnimateTo) {
       _pageController.jumpToPage(index);
+      return;
+    }
+    // As TabBarView does, so no page between is built and painted on the way.
+    if ((index - current).abs() > 1) {
+      final adjacent = index > current ? index - 1 : index + 1;
+      setState(() {
+        _order = List.generate(widget.navigationItems.length, (item) => item)
+          ..[adjacent] = current
+          ..[current] = adjacent;
+      });
+      _pageController.jumpToPage(adjacent);
+    }
+    final fade = tabAnimation == TabAnimation.fade;
+    await _pageController.animateToPage(
+      index,
+      duration: fade ? fadeTabDuration : kTabScrollDuration,
+      curve: fade ? fadeTabCurve : Curves.easeOut,
+    );
+    if (mounted && slide == _slide && _order != null) {
+      setState(() => _order = null);
     }
   }
 
@@ -236,6 +347,11 @@ class _HomePageViewState extends ConsumerState<_HomePageView> {
     final itemCount = ref.watch(
       currentNavigationItemsStateProvider.select((state) => state.value.length),
     );
+    final fade = ref.watch(
+      appSettingProvider.select(
+        (state) => state.tabAnimation == TabAnimation.fade,
+      ),
+    );
     return PageView.builder(
       controller: _pageController,
       physics: const NeverScrollableScrollPhysics(),
@@ -247,69 +363,95 @@ class _HomePageViewState extends ConsumerState<_HomePageView> {
         final index = widget.navigationItems.indexWhere(
           (item) => item.label == key.value,
         );
-        return index == -1 ? null : index;
+        if (index == -1) {
+          return null;
+        }
+        return _order?.indexOf(index) ?? index;
       },
       itemBuilder: (context, index) {
-        return widget.pageBuilder(context, index);
+        final page = widget.pageBuilder(context, _order?[index] ?? index);
+        return _FadeTabPage(
+          key: page.key,
+          controller: _pageController,
+          position: index,
+          enabled: fade,
+          child: page,
+        );
       },
     );
   }
 }
 
-class _NavigationBarDefaultsM3 extends NavigationBarThemeData {
-  _NavigationBarDefaultsM3(this.context)
-    : super(
-        height: 80.0,
-        elevation: 3.0,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      );
+const _restingDelta = 0.001;
 
-  final BuildContext context;
-  late final ColorScheme _colors = Theme.of(context).colorScheme;
-  late final TextTheme _textTheme = Theme.of(context).textTheme;
+/// Cancels the page view's slide so a tab switch cross-fades in place, and
+/// wraps every page even when off so switching the setting keeps their state.
+/// A page off its resting place is drawn from a snapshot, as a moving route is.
+class _FadeTabPage extends StatefulWidget {
+  const _FadeTabPage({
+    super.key,
+    required this.controller,
+    required this.position,
+    required this.enabled,
+    required this.child,
+  });
 
-  @override
-  Color? get backgroundColor => _colors.surfaceContainer;
-
-  @override
-  Color? get shadowColor => Colors.transparent;
-
-  @override
-  Color? get surfaceTintColor => Colors.transparent;
+  final PageController controller;
+  final int position;
+  final bool enabled;
+  final Widget child;
 
   @override
-  WidgetStateProperty<IconThemeData?>? get iconTheme {
-    return WidgetStateProperty.resolveWith((Set<WidgetState> states) {
-      return IconThemeData(
-        size: 24.0,
-        color: states.contains(WidgetState.disabled)
-            ? _colors.onSurfaceVariant.opacity38
-            : states.contains(WidgetState.selected)
-            ? _colors.onSecondaryContainer
-            : _colors.onSurfaceVariant,
-      );
-    });
+  State<_FadeTabPage> createState() => _FadeTabPageState();
+}
+
+class _FadeTabPageState extends State<_FadeTabPage> {
+  final _snapshot = SnapshotController();
+
+  @override
+  void dispose() {
+    _snapshot.dispose();
+    super.dispose();
+  }
+
+  // Not controller.page: it clamps to the extent of the last layout, which a
+  // page inserted before the current one outgrows before the next layout.
+  double get _delta {
+    final controller = widget.controller;
+    if (!controller.hasClients) {
+      return 0;
+    }
+    final metrics = controller.position;
+    if (!metrics.hasContentDimensions || metrics.viewportDimension == 0) {
+      return 0;
+    }
+    final page = metrics.pixels / metrics.viewportDimension;
+    return (widget.position - page).clamp(-1.0, 1.0);
   }
 
   @override
-  Color? get indicatorColor => _colors.secondaryContainer;
-
-  @override
-  ShapeBorder? get indicatorShape => AppShape.full;
-
-  @override
-  WidgetStateProperty<TextStyle?>? get labelTextStyle {
-    return WidgetStateProperty.resolveWith((Set<WidgetState> states) {
-      final TextStyle style = _textTheme.labelMedium!;
-      return style.apply(
-        overflow: TextOverflow.ellipsis,
-        color: states.contains(WidgetState.disabled)
-            ? _colors.onSurfaceVariant.opacity38
-            : states.contains(WidgetState.selected)
-            ? _colors.onSurface
-            : _colors.onSurfaceVariant,
-      );
-    });
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (_, child) {
+        final offset = _delta;
+        _snapshot.allowSnapshotting = offset.abs() > _restingDelta;
+        final delta = widget.enabled ? offset : 0.0;
+        return FractionalTranslation(
+          translation: Offset(-delta, 0),
+          child: Opacity(opacity: 1 - delta.abs(), child: child),
+        );
+      },
+      child: SnapshotWidget(
+        controller: _snapshot,
+        mode: SnapshotMode.permissive,
+        autoresize: true,
+        child: LiquidGlassHost(
+          enabled: LiquidGlassScope.of(context),
+          child: widget.child,
+        ),
+      ),
+    );
   }
 }
 
@@ -320,14 +462,18 @@ class HomeBackScopeContainer extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, ref) {
-    return CommonPopScope(
+    return PopGuard(
       onPop: (context) async {
-        final pageLabel = ref.read(currentPageLabelProvider);
+        final pageLabel = ref.read(shownPageLabelProvider);
         final realContext =
             GlobalObjectKey(pageLabel).currentContext ?? context;
         final canPop = Navigator.canPop(realContext);
         if (canPop) {
           Navigator.of(realContext).pop();
+        } else if (system.isTV && pageLabel != PageLabel.dashboard) {
+          ref
+              .read(currentPageLabelProvider.notifier)
+              .toPage(PageLabel.dashboard);
         } else {
           await ref.read(systemActionProvider.notifier).handleClose();
         }

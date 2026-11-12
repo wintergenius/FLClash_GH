@@ -1,9 +1,14 @@
-package main
+package core
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,11 +25,15 @@ import (
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/age"
+	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
 	cp "github.com/metacubex/mihomo/constant/provider"
-	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/dns"
+	rp "github.com/metacubex/mihomo/rules/provider"
 	"github.com/metacubex/mihomo/tunnel"
+	D "github.com/miekg/dns"
 )
 
 func namedProxy(name string) constant.Proxy {
@@ -93,82 +103,6 @@ func TestPatchSelectGroupRestoresASelectionWithoutValidatingIt(t *testing.T) {
 	patchSelectGroup(map[string]string{"group": "a name the provider dropped"})
 	if got := groupNow(t, group); got != "node-a" {
 		t.Errorf("group resolved to %q after a stale selection, want it to fall through to the first member", got)
-	}
-}
-
-// Coming out of Doze has to re-probe. The health checks that ran while the app
-// had no network at all left every proxy marked dead and every delay reading
-// Timeout, and a lazy provider skips its next tick because nothing touched it
-// in the meantime.
-func TestHandleSuspendRefreshesHealthChecksOnResume(t *testing.T) {
-	var refreshes atomic.Int32
-
-	previous := refreshHealthChecks
-	previousRunning := isRunning.Load()
-	refreshHealthChecks = func() { refreshes.Add(1) }
-	t.Cleanup(func() {
-		refreshHealthChecks = previous
-		isRunning.Store(previousRunning)
-		isSuspended.Store(false)
-		tunnel.OnRunning()
-	})
-
-	isSuspended.Store(false)
-	isRunning.Store(true)
-
-	handleSuspend(false)
-	if got := refreshes.Load(); got != 0 {
-		t.Errorf("refreshes = %d, want none: the device was never suspended", got)
-	}
-
-	handleSuspend(true)
-	if !isSuspended.Load() {
-		t.Error("handleSuspend(true) did not record the suspension")
-	}
-	if got := refreshes.Load(); got != 0 {
-		t.Errorf("refreshes = %d, want none while the device is still suspended", got)
-	}
-
-	handleSuspend(false)
-	if isSuspended.Load() {
-		t.Error("handleSuspend(false) did not clear the suspension")
-	}
-	if got := refreshes.Load(); got != 1 {
-		t.Errorf("refreshes = %d, want exactly one on resume", got)
-	}
-
-	handleSuspend(false)
-	if got := refreshes.Load(); got != 1 {
-		t.Errorf("refreshes = %d, want a redundant resume to change nothing", got)
-	}
-
-	// The service resumes the core on its way down, and probing every node
-	// through a teardown only produces failures nobody asked for.
-	isRunning.Store(false)
-	handleSuspend(true)
-	handleSuspend(false)
-	if got := refreshes.Load(); got != 1 {
-		t.Errorf("refreshes = %d, want no probe while the listeners are stopped", got)
-	}
-}
-
-func TestShouldPublishDelayDropsFailuresMeasuredInDoze(t *testing.T) {
-	t.Cleanup(func() { isSuspended.Store(false) })
-
-	isSuspended.Store(false)
-	if !shouldPublishDelay(0) {
-		t.Error("a failure measured while the device is awake is a real result")
-	}
-	if !shouldPublishDelay(120) {
-		t.Error("a successful probe while awake must reach the host")
-	}
-
-	isSuspended.Store(true)
-	if shouldPublishDelay(0) {
-		t.Error("a failure measured in Doze says nothing about the node, want it dropped")
-	}
-	if !shouldPublishDelay(120) {
-		t.Error("a probe that succeeded anyway is still worth publishing")
 	}
 }
 
@@ -313,17 +247,20 @@ func TestIsProxyGroupType(t *testing.T) {
 
 func TestDelayValue(t *testing.T) {
 	tests := []struct {
-		delay uint16
-		want  int32
+		delay    uint16
+		timedOut bool
+		want     int32
 	}{
-		{delay: 0, want: -1},
+		{delay: 0, want: delayFailed},
+		{delay: 0, timedOut: true, want: delayTimedOut},
 		{delay: 1, want: 1},
 		{delay: 250, want: 250},
+		{delay: 250, timedOut: true, want: 250},
 		{delay: 65535, want: 65535},
 	}
 	for _, test := range tests {
-		if got := delayValue(test.delay); got != test.want {
-			t.Errorf("delayValue(%d) = %d, want %d", test.delay, got, test.want)
+		if got := delayValue(test.delay, test.timedOut); got != test.want {
+			t.Errorf("delayValue(%d, %v) = %d, want %d", test.delay, test.timedOut, got, test.want)
 		}
 	}
 }
@@ -366,19 +303,143 @@ func TestHandleValidateConfigAcceptsAValidFile(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if got := handleValidateConfig(path); got != "" {
-		t.Fatalf("handleValidateConfig = %q, want no error", got)
+	if issue := handleValidateConfig(PathParams{Path: path}); issue != nil {
+		t.Fatalf("handleValidateConfig = %q, want no issue", *issue)
+	}
+}
+
+func TestHandleDecryptConfigReadsAnAgeEncryptedFile(t *testing.T) {
+	secretKey, publicKey, err := age.GenX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generate key pair: %v", err)
+	}
+	encrypted, err := age.EncryptBytes([]byte("mixed-port: 7890\n"), publicKey)
+	if err != nil {
+		t.Fatalf("encrypt config: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, encrypted, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := handleDecryptConfig(DecryptConfigParams{Path: path, AgeSecretKey: secretKey})
+	if err != nil {
+		t.Fatalf("handleDecryptConfig = %v, want no error", err)
+	}
+	if got != "mixed-port: 7890\n" {
+		t.Errorf("handleDecryptConfig = %q, want the plaintext config", got)
+	}
+
+	otherKey, _, err := age.GenX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generate key pair: %v", err)
+	}
+	if _, err := handleDecryptConfig(DecryptConfigParams{Path: path, AgeSecretKey: otherKey}); err == nil {
+		t.Error("handleDecryptConfig decrypted with a key the file was not encrypted to")
+	}
+}
+
+func TestHandleValidateProxiesReportsEachProxyInPlace(t *testing.T) {
+	issues := handleValidateProxies(ProxiesParams{Proxies: []map[string]any{
+		{"name": "ok", "type": "socks5", "server": "127.0.0.1", "port": 1080},
+		{"name": "untyped", "server": "127.0.0.1", "port": 1080},
+		{"name": "unknown", "type": "nope"},
+	}})
+
+	if len(issues) != 2 {
+		t.Fatalf("handleValidateProxies returned %d issues, want 2", len(issues))
+	}
+	got := issueAt(issues, 3)
+	if got[0] != "" {
+		t.Errorf("valid proxy reported %q", got[0])
+	}
+	if !strings.Contains(got[1], "missing type") {
+		t.Errorf("untyped proxy reported %q, want missing type", got[1])
+	}
+	if !strings.Contains(got[2], "unsupport") {
+		t.Errorf("unknown type reported %q, want unsupported", got[2])
+	}
+}
+
+func TestHandleConvertProxiesReadsABase64ShareLinkList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subscription")
+	links := "trojan://secret@example.com:443#first\nss://YWVzLTEyOC1nY206cGFzcw@example.com:8388#second\n"
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString([]byte(links))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := handleConvertProxies(PathParams{Path: path})
+
+	if err != nil {
+		t.Fatalf("handleConvertProxies error: %v", err)
+	}
+	names := make([]string, 0, len(got))
+	for _, proxy := range got {
+		names = append(names, fmt.Sprint(proxy["name"]))
+	}
+	if !slices.Equal(names, []string{"first", "second"}) {
+		t.Errorf("names = %v, want [first second]", names)
+	}
+}
+
+func TestHandleConvertProxiesRejectsAConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("proxies:\n  - name: a\n    type: direct\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := handleConvertProxies(PathParams{Path: path}); err == nil {
+		t.Fatal("handleConvertProxies found share links in a config")
+	}
+}
+
+type answeringDNSClient struct{}
+
+func (answeringDNSClient) Address() string  { return "answering" }
+func (answeringDNSClient) ResetConnection() {}
+func (answeringDNSClient) ExchangeContext(_ context.Context, m *D.Msg) (*D.Msg, error) {
+	return new(D.Msg).SetReply(m), nil
+}
+
+func TestHandleValidateProxiesLeavesARunningProxysResolverInPlace(t *testing.T) {
+	t.Cleanup(dns.RegisterEasyTierDnsClient("mesh", answeringDNSClient{}))
+	easyTier := func(name string) map[string]any {
+		return map[string]any{
+			"name":         name,
+			"type":         "easytier",
+			"network-name": "net",
+			"peers":        []any{"tcp://127.0.0.1:11010"},
+		}
+	}
+
+	got := issueAt(handleValidateProxies(ProxiesParams{Proxies: []map[string]any{
+		easyTier("mesh"),
+		easyTier("../../../../../../../../../../outside"),
+	}}), 2)
+
+	if got[0] != "" {
+		t.Fatalf("easytier proxy reported %q", got[0])
+	}
+	if !strings.Contains(got[1], "/outside") || strings.Contains(got[1], "\x00") {
+		t.Errorf("unsafe state dir reported %q, want the proxy's own name", got[1])
+	}
+	resolvers := dns.NewResolver(dns.Config{
+		Main: []dns.NameServer{{Net: "easytier", Addr: "mesh"}},
+	})
+	query := new(D.Msg).SetQuestion("host.mesh.", D.TypeA)
+	if _, err := resolvers.ExchangeContext(context.Background(), query); err != nil {
+		t.Fatalf("the running proxy lost its resolver: %v", err)
 	}
 }
 
 func TestHandleValidateConfigReportsAMissingFile(t *testing.T) {
-	got := handleValidateConfig(filepath.Join(t.TempDir(), "absent.yaml"))
+	issue := handleValidateConfig(PathParams{Path: filepath.Join(t.TempDir(), "absent.yaml")})
 
-	if got == "" {
+	if issue == nil {
 		t.Fatal("handleValidateConfig accepted a path that does not exist")
 	}
-	if !strings.Contains(got, "absent.yaml") {
-		t.Errorf("handleValidateConfig = %q, want it to name the missing file", got)
+	if !strings.Contains(*issue, "absent.yaml") {
+		t.Errorf("handleValidateConfig = %q, want it to name the missing file", *issue)
 	}
 }
 
@@ -388,7 +449,7 @@ func TestHandleValidateConfigReportsMalformedYaml(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if got := handleValidateConfig(path); got == "" {
+	if handleValidateConfig(PathParams{Path: path}) == nil {
 		t.Fatal("handleValidateConfig accepted malformed yaml")
 	}
 }
@@ -439,15 +500,18 @@ func TestLookupProxyFollowsAProviderUpdate(t *testing.T) {
 	}
 }
 
+func currentLogPump() *logPump {
+	logMu.Lock()
+	defer logMu.Unlock()
+	return activeLog
+}
+
 func TestHandleShutdownTearsDownBackgroundWork(t *testing.T) {
 	withCurrentConfig(t, &config.Config{General: &config.General{}, Controller: &config.Controller{}})
 	isInit.Store(true)
 
-	cancelled := false
-	logMu.Lock()
-	logSubscriber = make(chan log.Event)
-	logCancel = func() { cancelled = true }
-	logMu.Unlock()
+	handleStartLog()
+	pump := currentLogPump()
 
 	handleShutdown()
 
@@ -458,14 +522,11 @@ func TestHandleShutdownTearsDownBackgroundWork(t *testing.T) {
 		t.Error("isInit stayed true after shutdown")
 	}
 
-	logMu.Lock()
-	subscriber, cancel := logSubscriber, logCancel
-	logMu.Unlock()
-	if subscriber != nil || cancel != nil {
+	if currentLogPump() != nil {
 		t.Error("shutdown left the log stream subscribed, so events keep being pumped to a host that stopped the core")
 	}
-	if !cancelled {
-		t.Error("shutdown never cancelled the log pump")
+	if !pump.stopped.Load() {
+		t.Error("shutdown never stopped the log pump")
 	}
 }
 
@@ -475,7 +536,7 @@ func TestHandleChangeProxyDoesNotWaitOutAConfigApply(t *testing.T) {
 
 	answered := make(chan string, 1)
 	go func() {
-		answered <- handleChangeProxy(&ChangeProxyParams{GroupName: "absent", ProxyName: "node"})
+		answered <- handleChangeProxy(&ChangeProxyParams{GroupName: "absent", ProxyName: "node"}).Message
 	}()
 
 	select {
@@ -533,10 +594,9 @@ func TestAnyDelayTestStatusMatchesTheEmptyRange(t *testing.T) {
 }
 
 // The host reads the proxy tables — a proxy list for the UI, a provider lookup
-// for an update — while a config apply replaces them. Those reads used to be
-// serialised against the apply by a lock the host held for both; the tunnel's
-// own accessors take none, so under -race this is what proves the reads were
-// put back under the lock the apply writes with.
+// for an update — while a config apply replaces them. The tunnel's plain
+// accessors take no lock, so under -race this proves the reads share the lock
+// the apply writes with.
 func TestProxyTableReadsAreSerialisedAgainstAnApply(t *testing.T) {
 	withTunnelProviders(t, nil, nil)
 
@@ -598,19 +658,72 @@ func (p *failingProxyProvider) Update() error {
 	return p.err
 }
 
-func TestProviderRequestErrorCode(t *testing.T) {
+func TestClassifyProviderRequestError(t *testing.T) {
 	tests := []struct {
 		err  error
-		want string
+		want providerRequestFailure
+		ok   bool
 	}{
-		{err: errors.New("503 Service Unavailable"), want: "request_bad_response"},
-		{err: fmt.Errorf("fetch: %w", context.DeadlineExceeded), want: "request_error"},
-		{err: errors.New("proxy 0: unsupported type"), want: ""},
+		{
+			err:  errors.New("503 Service Unavailable"),
+			want: providerRequestFailure{code: "request_bad_response", statusCode: 503},
+			ok:   true,
+		},
+		{
+			err:  fmt.Errorf("fetch: %w", context.DeadlineExceeded),
+			want: providerRequestFailure{code: "request_error", reason: "timeout"},
+			ok:   true,
+		},
+		{
+			err:  &url.Error{Op: "Get", URL: "https://sub.example", Err: &net.DNSError{Err: "no such host", Name: "sub.example"}},
+			want: providerRequestFailure{code: "request_error", reason: "dns"},
+			ok:   true,
+		},
+		{
+			err:  fmt.Errorf("dial: %w", resolver.ErrIPNotFound),
+			want: providerRequestFailure{code: "request_error", reason: "dns"},
+			ok:   true,
+		},
+		{
+			err:  &url.Error{Op: "Get", URL: "https://sub.example", Err: x509.UnknownAuthorityError{}},
+			want: providerRequestFailure{code: "request_error", reason: "tls"},
+			ok:   true,
+		},
+		{
+			err:  &url.Error{Op: "Get", URL: "https://sub.example", Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}},
+			want: providerRequestFailure{code: "request_error", reason: "connection"},
+			ok:   true,
+		},
+		{
+			err:  &url.Error{Op: "Get", URL: "https://sub.example", Err: errors.New("unexpected")},
+			want: providerRequestFailure{code: "request_error"},
+			ok:   true,
+		},
+		{err: errors.New("proxy 0: unsupported type")},
 	}
 	for _, test := range tests {
-		if got := providerRequestErrorCode(test.err); got != test.want {
-			t.Errorf("providerRequestErrorCode(%q) = %q, want %q", test.err, got, test.want)
+		got, ok := classifyProviderRequestError(test.err)
+		if got != test.want || ok != test.ok {
+			t.Errorf("classifyProviderRequestError(%q) = %+v, %v, want %+v, %v", test.err, got, ok, test.want, test.ok)
 		}
+	}
+}
+
+func TestUpdateExternalProviderReportsRequestFailureDetails(t *testing.T) {
+	const name = "subscription"
+	provider := &failingProxyProvider{
+		fakeProxyProvider: fakeProxyProvider{name: name, vehicle: cp.HTTP},
+		err:               errors.New("403 Forbidden"),
+	}
+	withTunnelProviders(t, map[string]cp.ProxyProvider{name: provider}, nil)
+
+	methodError := asMethodError(handleUpdateExternalProvider(NameParams{Name: name}))
+	if methodError.Code != "request_bad_response" {
+		t.Fatalf("methodError = %+v, want request_bad_response", methodError)
+	}
+	details, ok := methodError.Details.(map[string]any)
+	if !ok || details["providerName"] != name || details["statusCode"] != 403 {
+		t.Errorf("details = %#v, want providerName %q and statusCode 403", methodError.Details, name)
 	}
 }
 
@@ -622,10 +735,11 @@ func TestUpdateExternalProviderCategorizesFailure(t *testing.T) {
 	}
 	withTunnelProviders(t, map[string]cp.ProxyProvider{name: provider}, nil)
 
-	methodError := handleUpdateExternalProvider(name)
-	if methodError == nil {
+	err := handleUpdateExternalProvider(NameParams{Name: name})
+	if err == nil {
 		t.Fatal("the provider error was reported as success")
 	}
+	methodError := asMethodError(err)
 	if methodError.Code != "provider_update_error" {
 		t.Errorf("code = %q, want provider_update_error", methodError.Code)
 	}
@@ -656,8 +770,8 @@ func TestUpdateExternalProviderRunsOneAtATime(t *testing.T) {
 	// Released through the cleanup so a blocked update never wedges the run.
 	t.Cleanup(func() { close(provider.release) })
 
-	first := make(chan *MethodError, 1)
-	go func() { first <- handleUpdateExternalProvider(name) }()
+	first := make(chan error, 1)
+	go func() { first <- handleUpdateExternalProvider(NameParams{Name: name}) }()
 
 	select {
 	case <-provider.started:
@@ -665,16 +779,16 @@ func TestUpdateExternalProviderRunsOneAtATime(t *testing.T) {
 		t.Fatal("the first update never started")
 	}
 
-	second := make(chan *MethodError, 1)
-	go func() { second <- handleUpdateExternalProvider(name) }()
+	second := make(chan error, 1)
+	go func() { second <- handleUpdateExternalProvider(NameParams{Name: name}) }()
 
 	select {
-	case methodError := <-second:
-		if methodError == nil {
+	case err := <-second:
+		if err == nil {
 			t.Fatal("the duplicate request reported success")
 		}
-		if methodError.Code != "provider_updating" {
-			t.Errorf("code = %q, want provider_updating", methodError.Code)
+		if code := asMethodError(err).Code; code != "provider_updating" {
+			t.Errorf("code = %q, want provider_updating", code)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the duplicate request reached the provider instead of being coalesced")
@@ -686,8 +800,8 @@ func TestUpdateExternalProviderRunsOneAtATime(t *testing.T) {
 	}
 
 	provider.release <- struct{}{}
-	if methodError := <-first; methodError != nil {
-		t.Fatalf("the first update reported %q", methodError.Message)
+	if err := <-first; err != nil {
+		t.Fatalf("the first update reported %q", err)
 	}
 
 	if got := provider.calls.Load(); got != 1 {
@@ -823,6 +937,63 @@ func TestForceGCReleasesTheProxyCache(t *testing.T) {
 	}
 }
 
+func TestLoadMemoryReleaseWaitsForTheLoadsToGoQuiet(t *testing.T) {
+	released := make(chan struct{}, 4)
+	delay, release := loadReleaseDelay, releaseLoadMemory
+	loadReleaseDelay = 400 * time.Millisecond
+	releaseLoadMemory = func() { released <- struct{}{} }
+	t.Cleanup(func() {
+		loadReleaseMu.Lock()
+		if loadReleaseTimer != nil {
+			loadReleaseTimer.Stop()
+		}
+		loadReleaseMu.Unlock()
+		loadReleaseDelay, releaseLoadMemory = delay, release
+	})
+
+	scheduleLoadMemoryRelease()
+	time.Sleep(100 * time.Millisecond)
+	scheduleLoadMemoryRelease()
+	time.Sleep(300 * time.Millisecond)
+
+	select {
+	case <-released:
+		t.Fatal("released while providers were still loading")
+	default:
+	}
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("never released once the loads went quiet")
+	}
+	select {
+	case <-released:
+		t.Error("one quiet spell released twice")
+	case <-time.After(600 * time.Millisecond):
+	}
+}
+
+func TestHandleGetMemoryStatsReportsALiveRuntime(t *testing.T) {
+	stats := handleGetMemoryStats()
+
+	if stats.HeapInuse == 0 {
+		t.Error("a running Go program always has heap in use; a zero means the runtime read was dropped")
+	}
+	encoded, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]uint64
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"rss", "heap-inuse", "heap-idle", "stack-inuse", "runtime-other"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("memory stats lost the %q field the Dart model reads", key)
+		}
+	}
+}
+
 func TestAllProxiesFollowsAProviderUpdate(t *testing.T) {
 	provider := newCachingProvider("subscription", "node-a")
 	withTunnelProviders(t, map[string]cp.ProxyProvider{"subscription": provider}, nil)
@@ -876,5 +1047,138 @@ func TestHandleGetProxiesSeesAProviderUpdate(t *testing.T) {
 	}
 	if _, exist := data.Proxies["node-a"]; exist {
 		t.Error("a proxy the refresh removed is still reported")
+	}
+}
+
+func TestProxyViewKeepsWhatTheHostReads(t *testing.T) {
+	encode := func(proxy constant.Proxy) map[string]any {
+		t.Helper()
+		data, err := json.Marshal(proxyView(proxy))
+		if err != nil {
+			t.Fatalf("marshal %s: %v", proxy.Name(), err)
+		}
+		view := map[string]any{}
+		if err := json.Unmarshal(data, &view); err != nil {
+			t.Fatalf("unmarshal %s: %v", proxy.Name(), err)
+		}
+		return view
+	}
+
+	node := encode(namedProxy("node-a"))
+	if want := map[string]any{"name": "node-a", "type": "Direct"}; fmt.Sprint(node) != fmt.Sprint(want) {
+		t.Errorf("node view = %v, want %v", node, want)
+	}
+	fromProvider := encode(adapter.NewProxy(outbound.NewDirectWithOption(outbound.DirectOption{
+		BasicOption: outbound.BasicOption{ProviderName: "subscription"},
+		Name:        "node-p",
+	})))
+	if fromProvider["provider-name"] != "subscription" {
+		t.Errorf("provider node view = %v, want its provider-name", fromProvider)
+	}
+
+	members := []constant.Proxy{namedProxy("node-a"), namedProxy("node-b")}
+	pd, err := provider.NewCompatibleProvider(
+		"group-provider", members, provider.NewHealthCheck(members, "", 0, 0, true, nil),
+	)
+	if err != nil {
+		t.Fatalf("NewCompatibleProvider: %v", err)
+	}
+	selector, err := outboundgroup.NewSelector(
+		outboundgroup.GroupCommonOption{Name: "group"},
+		outboundgroup.SelectorOption{},
+		namedProxy("COMPATIBLE"),
+		[]cp.ProxyProvider{pd},
+	)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	group := encode(adapter.NewProxy(selector))
+	if group["name"] != "group" || group["type"] != "Selector" || group["now"] != "node-a" {
+		t.Errorf("group view = %v, want its name, type and selection", group)
+	}
+	if fmt.Sprint(group["all"]) != "[node-a node-b]" {
+		t.Errorf("group members = %v, want [node-a node-b]", group["all"])
+	}
+	if _, exist := group["hidden"]; !exist {
+		t.Error("the host filters groups on hidden, so it has to be present")
+	}
+	if _, exist := group["history"]; exist {
+		t.Error("the view still carries delay history")
+	}
+}
+
+func TestProxyViewHidesOnlyTheBuiltInGlobal(t *testing.T) {
+	hidden := func(providerName string) any {
+		t.Helper()
+		members := []constant.Proxy{namedProxy("node-a")}
+		pd, err := provider.NewCompatibleProvider(
+			providerName, members, provider.NewHealthCheck(members, "", 0, 0, true, nil),
+		)
+		if err != nil {
+			t.Fatalf("NewCompatibleProvider: %v", err)
+		}
+		selector, err := outboundgroup.NewSelector(
+			outboundgroup.GroupCommonOption{Name: globalProxyName},
+			outboundgroup.SelectorOption{},
+			namedProxy("COMPATIBLE"),
+			[]cp.ProxyProvider{pd},
+		)
+		if err != nil {
+			t.Fatalf("NewSelector: %v", err)
+		}
+		data, err := json.Marshal(proxyView(adapter.NewProxy(selector)))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		view := map[string]any{}
+		if err := json.Unmarshal(data, &view); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return view["hidden"]
+	}
+
+	if got := hidden(provider.ReservedName); got != true {
+		t.Errorf("the built-in GLOBAL reports hidden %v, want true", got)
+	}
+	if got := hidden(globalProxyName); got != false {
+		t.Errorf("a configured GLOBAL group reports hidden %v, want false", got)
+	}
+}
+
+func TestDumpRuleSetReadsEitherMrsBehavior(t *testing.T) {
+	cases := []struct {
+		behavior cp.RuleBehavior
+		source   string
+		want     string
+	}{
+		{cp.Domain, "example.com\n+.example.org\n", "+.example.org\nexample.com\n"},
+		{cp.IPCIDR, "10.0.0.0/8\n192.168.1.0/24\n", "10.0.0.0/8\n192.168.1.0/24\n"},
+	}
+	for _, c := range cases {
+		var mrs strings.Builder
+		if err := rp.ConvertToMrs([]byte(c.source), c.behavior, cp.TextRule, &mrs); err != nil {
+			t.Fatalf("encode %s: %v", c.behavior, err)
+		}
+		path := filepath.Join(t.TempDir(), "rules.mrs")
+		if err := os.WriteFile(path, []byte(mrs.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := handleDumpRuleSet(PathParams{Path: path})
+		if err != nil {
+			t.Fatalf("dump %s: %v", c.behavior, err)
+		}
+		if got != c.want {
+			t.Fatalf("dump %s = %q, want %q", c.behavior, got, c.want)
+		}
+	}
+}
+
+func TestDumpRuleSetRejectsText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.txt")
+	if err := os.WriteFile(path, []byte("example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleDumpRuleSet(PathParams{Path: path}); err == nil {
+		t.Fatal("dumping a text rule set succeeded")
 	}
 }

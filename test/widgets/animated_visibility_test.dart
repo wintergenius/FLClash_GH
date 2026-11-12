@@ -1,6 +1,8 @@
-import 'package:fl_clash/widgets/animated_visibility.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:prism_ui/animated_visibility.dart';
+import '../helpers/host_scaffold.dart';
+import '../helpers/test_app.dart';
 
 void main() {
   testWidgets('releases horizontal layout space throughout the exit', (
@@ -10,8 +12,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -56,8 +58,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Column(
             children: [
               Expanded(child: SizedBox(key: contentKey)),
@@ -102,8 +104,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -127,8 +129,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -163,8 +165,8 @@ void main() {
     final visibilityKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -198,8 +200,8 @@ void main() {
     final visibilityKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -243,8 +245,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -275,8 +277,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Column(
             children: [
               const Expanded(child: SizedBox()),
@@ -302,6 +304,40 @@ void main() {
     expect(exitingPosition.dy, lessThan(600));
   });
 
+  testWidgets('settled content paints past its bounds', (tester) async {
+    Widget buildApp(bool visible) {
+      return HostApp(
+        home: HostScaffold(
+          body: Column(
+            children: [
+              const Expanded(child: SizedBox()),
+              AnimatedVisibility.bottomNavigation(
+                visible: visible,
+                child: const SizedBox(width: 180, height: 80),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Clip clip() => tester
+        .widget<ClipRect>(
+          find.descendant(
+            of: find.byType(AnimatedVisibility),
+            matching: find.byType(ClipRect),
+          ),
+        )
+        .clipBehavior;
+
+    await tester.pumpWidget(buildApp(true));
+    expect(clip(), Clip.none);
+
+    await tester.pumpWidget(buildApp(false));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(clip(), Clip.hardEdge);
+  });
+
   testWidgets('horizontal transition clips without narrowing its child', (
     tester,
   ) async {
@@ -309,8 +345,8 @@ void main() {
     final contentKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -319,7 +355,7 @@ void main() {
                 child: SizedBox(
                   key: contentKey,
                   width: 180,
-                  child: const ListTile(
+                  child: const TestRow(
                     contentPadding: EdgeInsets.symmetric(horizontal: 16),
                     leading: SizedBox(width: 80),
                     title: Text('Title'),
@@ -353,8 +389,8 @@ void main() {
     final visibilityKey = GlobalKey();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(
@@ -390,8 +426,8 @@ void main() {
     final contentKey = GlobalKey<_StatefulContentState>();
 
     Widget buildApp(bool visible) {
-      return MaterialApp(
-        home: Scaffold(
+      return HostApp(
+        home: HostScaffold(
           body: Row(
             children: [
               AnimatedVisibility.sidebar(

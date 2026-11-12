@@ -1,16 +1,17 @@
+import 'dart:async';
+
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/l10n/l10n.dart';
-import 'package:fl_clash/manager/status_manager.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/state.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'helpers/test_app.dart';
 import 'helpers/test_profiles.dart';
+import 'package:prism_ui/prism_ui.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -36,17 +37,13 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: MaterialApp(
+        child: HostApp(
           navigatorKey: globalState.navigatorKey,
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            ...GlobalMaterialLocalizations.delegates,
-          ],
-          supportedLocales: AppLocalizations.delegate.supportedLocales,
           builder: (context, child) {
-            globalState.measure = Measure.of(context, 1);
-            globalState.theme = CommonTheme.of(context, 1);
-            return StatusManager(child: child!);
+            return wrapAppScopes(
+              context,
+              BannerHost(stacked: false, topInset: 0, child: child!),
+            );
           },
           home: const SizedBox(key: Key('child')),
         ),
@@ -186,6 +183,99 @@ void main() {
       );
 
       expect(result, 1);
+    });
+  });
+
+  group('batchRun', () {
+    testWidgets('caps the work in flight and reports failures in one message', (
+      tester,
+    ) async {
+      await pumpHost(tester);
+      const tag = LoadingTag.profiles;
+      final gates = List.generate(5, (_) => Completer<void>());
+      var active = 0;
+      var peak = 0;
+
+      final run = globalState.batchRun<int>(
+        [0, 1, 2, 3, 4],
+        (index) async {
+          active++;
+          peak = active > peak ? active : peak;
+          try {
+            await gates[index].future;
+            if (index.isOdd) {
+              throw StateError('failed $index');
+            }
+          } finally {
+            active--;
+          }
+        },
+        label: (index) => 'item $index',
+        concurrency: 2,
+        tag: tag,
+      );
+      await tester.pump();
+      expect(active, 2);
+      expect(container.read(loadingProvider(tag)), isTrue);
+
+      for (final gate in gates) {
+        gate.complete();
+        await tester.pump();
+        expect(container.read(loadingProvider(tag)), isTrue);
+      }
+      await run;
+      await tester.pumpAndSettle();
+
+      expect(peak, 2);
+      expect(find.byType(AlertDialog), findsNothing);
+      final failed = find.text(currentAppLocalizations.failedCount(2));
+      expect(failed, findsOneWidget);
+
+      await tester.tap(failed);
+      await tester.pumpAndSettle();
+      expect(failed, findsNothing);
+      expect(find.text('Error details'), findsOneWidget);
+      expect(find.text('item 1'), findsOneWidget);
+      expect(find.text('item 3'), findsOneWidget);
+      expect(find.textContaining('failed 3'), findsOneWidget);
+      expect(find.text('item 0'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('item 1')).dy,
+        lessThan(tester.getTopLeft(find.text('item 3')).dy),
+      );
+
+      await tester.pump(const Duration(milliseconds: 1100));
+      expect(container.read(loadingProvider(tag)), isFalse);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('names a lone failure and its reason in the message', (
+      tester,
+    ) async {
+      await pumpHost(tester);
+
+      await globalState.batchRun<int>(
+        [0, 1],
+        (index) async {
+          if (index == 1) {
+            throw StateError('failed 1');
+          }
+        },
+        label: (index) => 'item $index',
+        concurrency: 2,
+        tag: null,
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining(RegExp(r'^item 1: .*failed 1')),
+        findsOneWidget,
+      );
+      expect(find.text('View'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
     });
   });
 

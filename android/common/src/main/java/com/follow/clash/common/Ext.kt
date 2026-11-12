@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.Context.RECEIVER_EXPORTED
 import android.content.Context.RECEIVER_NOT_EXPORTED
 import android.content.Intent
 import android.content.IntentFilter
@@ -30,6 +31,9 @@ val ComponentName.intent: Intent
 val QuickAction.action: String
     get() = "${GlobalState.application.packageName}.action.${this.name}"
 
+val QuickAction.shortcutId: String
+    get() = name.lowercase()
+
 val QuickAction.quickIntent: Intent
     get() = Components.quickActionActivity.intent.apply {
         action = this@quickIntent.action
@@ -44,7 +48,6 @@ fun BroadcastAction.sendBroadcast() {
     val intent = Intent(broadcastAction).apply {
         component = Components.serviceBroadcastReceiver
     }
-    GlobalState.log("Send broadcast: $broadcastAction")
     GlobalState.application.sendBroadcast(
         intent,
         GlobalState.receiveBroadcastPermission,
@@ -59,19 +62,24 @@ val Intent.toPendingIntent: PendingIntent
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
-fun Service.startForeground(notification: Notification) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val manager = getSystemService(NotificationManager::class.java)
-        var channel = manager?.getNotificationChannel(GlobalState.NOTIFICATION_CHANNEL)
-        if (channel == null) {
-            channel = NotificationChannel(
-                GlobalState.NOTIFICATION_CHANNEL,
-                getString(R.string.service_channel_name),
-                NotificationManager.IMPORTANCE_LOW,
-            )
-            manager?.createNotificationChannel(channel)
-        }
+fun Context.ensureNotificationChannel() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        return
     }
+    val manager = getSystemService(NotificationManager::class.java) ?: return
+    if (manager.getNotificationChannel(GlobalState.NOTIFICATION_CHANNEL) != null) {
+        return
+    }
+    manager.createNotificationChannel(
+        NotificationChannel(
+            GlobalState.NOTIFICATION_CHANNEL,
+            getString(R.string.service_channel_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ),
+    )
+}
+
+fun Service.startForeground(notification: Notification) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         startForeground(
             GlobalState.NOTIFICATION_ID,
@@ -87,13 +95,19 @@ fun Service.startForeground(notification: Notification) {
 fun Context.registerReceiverCompat(
     receiver: BroadcastReceiver,
     filter: IntentFilter,
+    exported: Boolean = false,
 ) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-    registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
+    registerReceiver(
+        receiver,
+        filter,
+        if (exported) RECEIVER_EXPORTED else RECEIVER_NOT_EXPORTED,
+    )
 } else {
     registerReceiver(receiver, filter)
 }
 
 fun Context.receiveBroadcastFlow(
+    exported: Boolean = false,
     configure: IntentFilter.() -> Unit,
 ): Flow<Intent> = callbackFlow {
     val filter = IntentFilter().apply(configure)
@@ -103,6 +117,14 @@ fun Context.receiveBroadcastFlow(
             trySend(intent)
         }
     }
-    registerReceiverCompat(receiver, filter)
-    awaitClose { unregisterReceiver(receiver) }
+    registerReceiverCompat(receiver, filter, exported)
+    awaitClose {
+        // Cancellation reaches here on another thread, so a Service whose
+        // onDestroy cancelled the collector may already have had the system
+        // drop its leaked receivers, and unregistering again then throws.
+        try {
+            unregisterReceiver(receiver)
+        } catch (_: IllegalArgumentException) {
+        }
+    }
 }

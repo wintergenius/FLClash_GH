@@ -5,12 +5,42 @@ import 'package:flutter/foundation.dart';
 
 import 'print.dart';
 import 'protocol.dart';
+import 'string.dart';
 
 typedef InstallConfigCallBack = void Function(String url);
 typedef InstallConfigWithNameCallBack = void Function(
   String url,
   String? name,
 );
+
+String? profileUrlFromQrCodes(Iterable<String?> values) {
+  for (final value in values) {
+    final text = value?.trim();
+    if (text == null || text.isEmpty) {
+      continue;
+    }
+    if (text.isUrl || text.isShareLink) {
+      return text;
+    }
+    final uri = Uri.tryParse(text);
+    if (uri == null || !protocolSchemes.contains(uri.scheme)) {
+      continue;
+    }
+    final url = _installConfigUrl(uri);
+    if (url != null && url.isUrl) {
+      return url;
+    }
+  }
+  return null;
+}
+
+String? _installConfigUrl(Uri uri) {
+  if (uri.host != 'install-config') {
+    return null;
+  }
+  final url = uri.queryParameters['url']?.trim();
+  return url == null || url.isEmpty ? null : url;
+}
 
 class LinkManager {
   static LinkManager? _instance;
@@ -58,17 +88,14 @@ class LinkManager {
         ? '${uri.scheme}://${uri.host}${uri.path}?hasUrl=${uri.queryParameters.containsKey("url")}'
         : '${uri.scheme}://${uri.host}${uri.path}';
     commonPrint.log('onAppLink: $safeLog');
-    if (uri.host == 'install-config') {
-      final parameters = uri.queryParameters;
-      final url = parameters['url']?.trim();
-      if (url != null && url.isNotEmpty) {
-        final rawName = parameters['name']?.trim();
-        final name = (rawName != null && rawName.isNotEmpty) ? rawName : null;
-        if (onInstallConfig != null) {
-          onInstallConfig(url, name);
-        } else {
-          installConfigCallBack(url);
-        }
+    final url = _installConfigUrl(uri);
+    if (url != null) {
+      final rawName = uri.queryParameters['name']?.trim();
+      final name = (rawName != null && rawName.isNotEmpty) ? rawName : null;
+      if (onInstallConfig != null) {
+        onInstallConfig(url, name);
+      } else {
+        installConfigCallBack(url);
       }
     }
   }

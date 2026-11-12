@@ -5,7 +5,6 @@ import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -16,25 +15,12 @@ class SharedStateTest {
     private val gson = Gson()
 
     @Test
-    fun `setup params use the kebab-case spelling Flutter writes`() {
-        val json = """{"test-url":"https://example.test/204","selected-map":{"GLOBAL":"auto"}}"""
+    fun `setup params reach the Core exactly as Flutter wrote them`() {
+        val params = """{"selected-map":{"GLOBAL":"auto"},"options":{"test-url":"t","skip-cert-verify":true}}"""
 
-        val params = gson.fromJson(json, SetupParams::class.java)
+        val state = gson.fromJson("""{"setupParams":$params}""", SharedState::class.java)
 
-        assertEquals("https://example.test/204", params.testUrl)
-        assertEquals(mapOf("GLOBAL" to "auto"), params.selectedMap)
-    }
-
-    @Test
-    fun `setup params serialize back to the same spelling`() {
-        val encoded = gson.toJson(
-            SetupParams(testUrl = "https://example.test", selectedMap = emptyMap()),
-        )
-
-        assertTrue(encoded.contains("\"test-url\""))
-        assertTrue(encoded.contains("\"selected-map\""))
-        assertTrue(!encoded.contains("testUrl"))
-        assertTrue(!encoded.contains("selectedMap"))
+        assertEquals(params, gson.toJson(state.setupParams))
     }
 
     @Test
@@ -43,7 +29,6 @@ class SharedStateTest {
             {
               "startTip": "Starting",
               "stopTip": "Stopping",
-              "crashlytics": false,
               "currentProfileName": "Work",
               "stopText": "Halt",
               "onlyStatisticsProxy": true,
@@ -76,7 +61,6 @@ class SharedStateTest {
 
         assertEquals("Starting", state.startTip)
         assertEquals("Work", state.currentProfileName)
-        assertEquals(false, state.crashlytics)
         assertEquals(true, state.onlyStatisticsProxy)
         assertEquals(false, state.showStopAction)
         assertEquals(7890, state.vpnOptions?.port)
@@ -86,7 +70,10 @@ class SharedStateTest {
             state.vpnOptions?.accessControlProps?.mode,
         )
         assertEquals(listOf("0.0.0.0/0"), state.vpnOptions?.routeAddress)
-        assertEquals("https://example.test/204", state.setupParams?.testUrl)
+        assertEquals(
+            "auto",
+            state.setupParams?.getAsJsonObject("selected-map")?.get("GLOBAL")?.asString,
+        )
     }
 
     @Test
@@ -95,7 +82,6 @@ class SharedStateTest {
 
         assertEquals("FlClash", defaults.currentProfileName)
         assertEquals("Stop", defaults.stopText)
-        assertEquals(true, defaults.crashlytics)
         assertEquals(false, defaults.onlyStatisticsProxy)
         assertEquals(true, defaults.showStopAction)
         assertNull(defaults.vpnOptions)
@@ -112,7 +98,6 @@ class SharedStateTest {
         assertNotNull(state)
         assertEquals("Starting VPN...", state.startTip)
         assertEquals("FlClash", state.currentProfileName)
-        assertEquals(true, state.crashlytics)
         assertNull(state.vpnOptions)
         assertNull(state.setupParams)
     }
@@ -124,19 +109,6 @@ class SharedStateTest {
         assertEquals("Work", state.currentProfileName)
         assertEquals("Stop", state.stopText)
         assertEquals("Stopping VPN...", state.stopTip)
-    }
-
-    @Test
-    fun `setup params have no defaults so absent fields decode as null`() {
-        // SetupParams declares no default values, so Gson builds it through Unsafe and
-        // leaves missing fields null despite the non-nullable Kotlin types.
-        val params = gson.fromJson("{}", SetupParams::class.java)
-
-        @Suppress("SENSELESS_COMPARISON")
-        assertTrue(params.testUrl == null)
-
-        @Suppress("SENSELESS_COMPARISON")
-        assertTrue(params.selectedMap == null)
     }
 
     @Test

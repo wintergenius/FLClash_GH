@@ -1,6 +1,6 @@
-//go:build !(android && cgo)
+//go:build !android
 
-package main
+package core
 
 import (
 	"encoding/binary"
@@ -26,9 +26,8 @@ var (
 )
 
 const (
-	maxIPCFrameSize        = 64 * 1024 * 1024
-	ipcWriteTimeout        = 10 * time.Second
-	ipcPartialFrameRetries = 6
+	maxIPCFrameSize = 64 * 1024 * 1024
+	ipcWriteTimeout = 10 * time.Second
 )
 
 var deliveryFailureReported atomic.Bool
@@ -43,17 +42,13 @@ func logDeliveryError(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[ERROR] "+format+"\n", args...)
 }
 
-func (response MethodResponse) send() {
-	data, err := response.JSON()
-	if err != nil {
-		logError("MethodResponse marshal error: id=%s err=%v", response.ID, err)
-		return
-	}
+func deliverEvent(data []byte) {
 	send(data)
 }
 
-func deliverEvent(data []byte) {
-	send(data)
+// The desktop core exits with its host connection, so it is always heard.
+func hasEventListener() bool {
+	return true
 }
 
 func writeFrame(w io.Writer, data []byte) (int, error) {
@@ -73,7 +68,6 @@ func writeFrame(w io.Writer, data []byte) (int, error) {
 type resumingWriter struct {
 	conn    ipcConn
 	written int
-	stalls  int
 }
 
 func (writer *resumingWriter) Write(data []byte) (int, error) {
@@ -91,15 +85,22 @@ func (writer *resumingWriter) Write(data []byte) (int, error) {
 	}
 }
 
+// A half-written frame is only in sync while this process keeps writing it,
+// and a host the OS has suspended (Windows Modern Standby freezes the app but
+// not a service's child) drains again whenever it wakes, so a stall is waited
+// out for as long as it lasts. A dead host surfaces as a hard error instead.
 func (writer *resumingWriter) resume(err error) bool {
-	if writer.written == 0 || writer.stalls >= ipcPartialFrameRetries {
+	if writer.written == 0 || !isWriteTimeout(err) {
 		return false
 	}
-	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		return false
-	}
-	writer.stalls++
 	return writer.conn.SetWriteDeadline(time.Now().Add(ipcWriteTimeout)) == nil
+}
+
+// go-winio reports an expired deadline as its own ErrTimeout, which does not
+// match os.ErrDeadlineExceeded; Timeout() is the contract every pipe shares.
+func isWriteTimeout(err error) bool {
+	var timeout interface{ Timeout() bool }
+	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
 func writeAll(w io.Writer, data []byte) (int, error) {
@@ -119,11 +120,11 @@ func writeAll(w io.Writer, data []byte) (int, error) {
 }
 
 func readFrame(r io.Reader) ([]byte, error) {
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(r, lenBuf); err != nil {
+	lenBuf := [4]byte{}
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, err
 	}
-	length := binary.LittleEndian.Uint32(lenBuf)
+	length := binary.LittleEndian.Uint32(lenBuf[:])
 	if length > maxIPCFrameSize {
 		return nil, fmt.Errorf("IPC frame exceeds %d bytes", maxIPCFrameSize)
 	}
@@ -167,7 +168,7 @@ func send(data []byte) {
 	_ = c.Close()
 }
 
-func startServer(arg string) {
+func StartServer(arg string) {
 	dialed, err := dial(arg)
 	if err != nil {
 		panic(err.Error())
@@ -207,6 +208,6 @@ func serve(dialed ipcConn) {
 			continue
 		}
 
-		go handleMethodCall(call, newMethodResponse(call.ID, nil))
+		dispatchMethodCall(call, send)
 	}
 }

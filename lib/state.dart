@@ -1,25 +1,23 @@
 import 'dart:async';
 
+import 'package:fl_clash/providers/app.dart';
+import 'package:fl_clash/providers/config.dart';
+import 'package:fl_clash/ui/ui.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
 import 'common/common.dart';
 import 'enum/enum.dart';
 import 'models/models.dart';
 
-import 'package:fl_clash/common/theme.dart';
-import 'package:fl_clash/providers/app.dart';
-import 'package:fl_clash/providers/config.dart';
-import 'package:flutter/foundation.dart';
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:package_info_plus/package_info_plus.dart';
-
 class GlobalState {
   static GlobalState? _instance;
   GlobalKey<NavigatorState> get navigatorKey => rootNavigatorKey;
-  late final String appEnv;
-  late final PackageInfo packageInfo;
-  Function? updateCurrentDelayDebounce;
+  late String appEnv;
+  late PackageInfo packageInfo;
   late Measure measure;
-  late CommonTheme theme;
   late ProviderContainer container;
   bool needInitStatus = true;
 
@@ -33,7 +31,7 @@ class GlobalState {
   }
 
   String? lastConfigMd5;
-  VpnState? lastVpnState;
+  ConfigCounts? lastConfigCounts;
   bool isAttach = false;
 
   GlobalState._internal();
@@ -70,6 +68,39 @@ class GlobalState {
     );
   }
 
+  /// Concurrent [loadingRun]s would let the first to finish clear [tag].
+  Future<void> batchRun<T>(
+    List<T> items,
+    Future<void> Function(T item) task, {
+    required String Function(T item) label,
+    required int concurrency,
+    required LoadingTag? tag,
+  }) async {
+    final pool = TaskPool(concurrency);
+    final failures = List<UpdatingMessage?>.filled(items.length, null);
+    await loadingRun(
+      () => Future.wait([
+        for (final (index, item) in items.indexed)
+          pool.run(() async {
+            try {
+              await task(item);
+            } catch (e, s) {
+              commonPrint.log(
+                '${label(item)} ===> ${compactError(e)}, $s',
+                logLevel: LogLevel.warning,
+              );
+              failures[index] = UpdatingMessage(
+                label: label(item),
+                message: userFacingErrorMessage(e, currentAppLocalizations),
+              );
+            }
+          }),
+      ]),
+      tag: tag,
+    );
+    dialogs.showFailures(failures.nonNulls.toList());
+  }
+
   Future<T?> safeRun<T>(
     FutureOr<T> Function() futureFunction, {
     String? title,
@@ -89,10 +120,10 @@ class GlobalState {
       );
       final message = userFacingErrorMessage(e, currentAppLocalizations);
       if (silence) {
-        dialogs.showNotifier(message, level: MessageLevel.error);
+        dialogs.showBanner(message, level: BannerLevel.error);
       } else {
         unawaited(
-          dialogs.showMessage(
+          dialogs.showAlert(
             title: title ?? currentAppLocalizations.tip,
             message: TextSpan(text: message),
           ),

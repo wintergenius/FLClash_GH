@@ -41,9 +41,15 @@ void main() {
     List<String> excludeSSIDs = const [],
     int mixedPort = 7890,
     bool checkCertificate = true,
+    String androidSessionSecret = '',
   }) {
     final container = ProviderContainer(
-      overrides: [excludeSSIDsProvider.overrideWithValue(excludeSSIDs)],
+      overrides: [
+        excludeSSIDsProvider.overrideWithValue(excludeSSIDs),
+        androidSessionProxySecretProvider.overrideWithValue(
+          androidSessionSecret,
+        ),
+      ],
     );
     addTearDown(container.dispose);
     container.read(runTimeProvider.notifier).value = running ? 1 : null;
@@ -159,6 +165,38 @@ void main() {
         443,
       ),
       isTrue,
+    );
+  });
+
+  test('protects Android loopback mixed-port with session secret unless LAN or user auth is set', () {
+    final container = buildContainer(androidSessionSecret: 'ephemeral123');
+
+    expect(
+      FlClashHttpOverrides.findProxyFor(container, remote),
+      'PROXY gh:ephemeral123@localhost:7890',
+    );
+
+    // Explicit user credentials take precedence over the ephemeral session secret.
+    container.read(networkSettingProvider.notifier).value = const NetworkProps()
+        .copyWith(
+          authentication: const AuthenticationProps(
+            enable: true,
+            username: 'alice',
+            password: 'custom',
+          ),
+        );
+    expect(
+      FlClashHttpOverrides.findProxyFor(container, remote),
+      'PROXY alice:custom@localhost:7890',
+    );
+
+    // When user auth is off and LAN sharing is enabled, open LAN sharing works as expected.
+    container.read(networkSettingProvider.notifier).value = const NetworkProps();
+    container.read(patchClashConfigProvider.notifier).value =
+        const PatchClashConfig().copyWith(allowLan: true);
+    expect(
+      FlClashHttpOverrides.findProxyFor(container, remote),
+      'PROXY localhost:7890',
     );
   });
 }

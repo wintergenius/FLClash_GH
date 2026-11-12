@@ -1,11 +1,13 @@
-import 'package:fl_clash/common/measure.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:prism_ui/measure.dart';
+import 'package:prism_ui/typography.dart';
+import '../helpers/test_app.dart';
 
 Future<Measure> _measureIn(WidgetTester tester, {double scale = 1}) async {
   late Measure measure;
   await tester.pumpWidget(
-    MaterialApp(
+    HostApp(
       home: Builder(
         builder: (context) {
           measure = Measure.of(context, scale);
@@ -29,31 +31,6 @@ void main() {
     expect(scaled.height, greaterThan(baseline.height));
   });
 
-  testWidgets('an explicit style overrides the size of an unstyled text', (
-    tester,
-  ) async {
-    final measure = await _measureIn(tester);
-    final small = measure.computeTextSize(
-      const Text('FlClash'),
-      style: const TextStyle(fontSize: 10),
-    );
-    final large = measure.computeTextSize(
-      const Text('FlClash'),
-      style: const TextStyle(fontSize: 40),
-    );
-    expect(large.width, greaterThan(small.width));
-  });
-
-  testWidgets('overflow is reported only when the text cannot fit', (
-    tester,
-  ) async {
-    final measure = await _measureIn(tester);
-    const text = Text('a considerably longer run of text', maxLines: 1);
-
-    expect(measure.computeTextIsOverflow(text, maxWidth: 10), isTrue);
-    expect(measure.computeTextIsOverflow(text, maxWidth: 2000), isFalse);
-  });
-
   testWidgets('repeated measurement releases each painter', (tester) async {
     final measure = await _measureIn(tester);
     // A leaked TextPainter holds a native paragraph; the framework's leak
@@ -61,7 +38,6 @@ void main() {
     // only shows up while scrolling a long proxy list.
     for (var i = 0; i < 50; i++) {
       measure.computeTextSize(Text('row $i'));
-      measure.computeTextIsOverflow(Text('row $i'), maxWidth: 20);
     }
     expect(tester.takeException(), null);
   });
@@ -70,12 +46,12 @@ void main() {
     tester,
   ) async {
     final measure = await _measureIn(tester);
-    expect(measure.bodyMediumHeight, greaterThan(0));
-    expect(measure.bodyMediumHeight, measure.bodyMediumHeight);
-    expect(measure.bodyLargeHeight, greaterThan(measure.bodySmallHeight));
-    expect(measure.titleLargeHeight, greaterThan(measure.labelSmallHeight));
-    expect(measure.titleMediumHeight, greaterThan(0));
-    expect(measure.labelMediumHeight, greaterThan(0));
-    expect(measure.titleSmallHeight, greaterThan(0));
+    final subheadline = measure.textHeight(AppTextStyle.subheadline);
+    expect(subheadline, greaterThan(0));
+    expect(measure.textHeight(AppTextStyle.subheadline), subheadline);
+    expect(
+      measure.textHeight(AppTextStyle.body),
+      greaterThan(measure.textHeight(AppTextStyle.footnote)),
+    );
   });
 }

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'sources.dart';
+
 const _disposableTypes = {
   'AnimationController',
   'FocusNode',
@@ -20,6 +22,9 @@ const _allowed = {
   // `CoreEventManager` is a private-constructor singleton that fans core events
   // out for the whole run; closing its controller would end event delivery.
   'lib/core/event.dart#_controller',
+  // `App` is the process-wide Android plugin; the notifier relays keyboard
+  // state from the platform channel for the whole run.
+  'lib/plugins/app.dart#floatingKeyboard',
 };
 
 final _declaration = RegExp(
@@ -46,10 +51,9 @@ bool _isGenerated(String path) {
 
 void main() {
   test('every self-created disposable field is released in the same file', () {
-    final root = Directory('lib');
     final offenders = <String>[];
 
-    for (final entity in root.listSync(recursive: true)) {
+    for (final entity in sourceEntities()) {
       if (entity is! File || !entity.path.endsWith('.dart')) {
         continue;
       }

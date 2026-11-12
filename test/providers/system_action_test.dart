@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Brightness, Color;
 
 import 'package:fl_clash/common/app_ports.dart';
 import 'package:fl_clash/common/preferences.dart';
@@ -9,7 +10,8 @@ import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riverpod/riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import '../helpers/preferences.dart';
 
 class TestSystemAction extends SystemAction {
   final List<String> calls = [];
@@ -65,6 +67,13 @@ class _GeometryWindowPort implements WindowPort {
     }
     return geometry;
   }
+
+  @override
+  Future<double?> setBlur({
+    required bool enabled,
+    required Brightness brightness,
+    required Color tint,
+  }) async => null;
 
   @override
   Future<void> close() async {}
@@ -247,7 +256,7 @@ void main() {
   test(
     'saving preferences captures the latest normal window geometry',
     () async {
-      SharedPreferences.setMockInitialValues({});
+      await mockPreferences();
       const geometry = WindowProps(width: 1180, height: 760, left: 72, top: 48);
       windowPort = _GeometryWindowPort(geometry);
       final action = _PersistenceSystemAction();
@@ -271,7 +280,7 @@ void main() {
   test(
     'a geometry failure does not prevent saving the current config',
     () async {
-      SharedPreferences.setMockInitialValues({});
+      await mockPreferences();
       const current = WindowProps(width: 900, height: 640, left: 24, top: 16);
       windowPort = _GeometryWindowPort(
         const WindowProps(),

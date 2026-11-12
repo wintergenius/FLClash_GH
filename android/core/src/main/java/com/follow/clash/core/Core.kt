@@ -1,23 +1,25 @@
 package com.follow.clash.core
 
+import com.follow.clash.core.mobile.Mobile
+import com.follow.clash.core.mobile.ResultHandler
+import com.follow.clash.core.mobile.TunHandler
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.URI
 
 object Core {
-    private external fun startTun(
-        fd: Int,
-        cb: TunInterface,
-        stack: String,
-        address: String,
-        dns: String,
-    ): Boolean
+    /** Loads the Go library and runs its package init, which the first call otherwise pays for. */
+    fun load() = Mobile.touch()
 
-    external fun forceGC()
+    fun forceGC() = Mobile.forceGC()
 
-    external fun updateDNS(
+    fun setMitmPressure(level: Int) = Mobile.setMitmPressure(level)
+
+    fun updateDNS(
         dns: String,
-    )
+    ) = Mobile.updateDns(dns)
+
+    fun resetNetwork() = Mobile.resetNetwork()
 
     private fun parseInetSocketAddress(address: String): InetSocketAddress {
         val uri = URI("tcp://$address")
@@ -34,10 +36,11 @@ object Core {
         stack: String,
         address: String,
         dns: String,
+        options: String,
     ): Boolean {
-        return startTun(
+        return Mobile.startTun(
             fd,
-            object : TunInterface {
+            object : TunHandler {
                 override fun protect(fd: Int): Boolean = protect(fd)
 
                 override fun resolveUid(
@@ -57,48 +60,23 @@ object Core {
             stack,
             address,
             dns,
+            options,
         )
     }
-
-    external fun suspended(
-        suspended: Boolean,
-    )
-
-    private external fun invokeMethod(
-        data: String,
-        cb: InvokeInterface,
-    )
 
     fun invokeMethod(
         data: String,
-        cb: (result: String?) -> Unit,
+        cb: (result: ByteArray?) -> Unit,
     ) {
-        invokeMethod(
-            data,
-            object : InvokeInterface {
-                override fun onResult(result: String?) {
-                    cb(result)
-                }
-            },
-        )
+        Mobile.invokeMethod(data, ResultHandler { result -> cb(result) })
     }
 
-    private external fun setEventListener(cb: InvokeInterface?)
-
     fun updateEventListener(
-        callback: ((result: String?) -> Unit)?,
+        callback: ((result: ByteArray) -> Unit)?,
     ) {
-        if (callback == null) {
-            setEventListener(null)
-        } else {
-            setEventListener(
-                object : InvokeInterface {
-                    override fun onResult(result: String?) {
-                        callback(result)
-                    }
-                },
-            )
-        }
+        Mobile.setEventListener(
+            callback?.let { ResultHandler { result -> it(result ?: ByteArray(0)) } },
+        )
     }
 
     fun quickSetup(
@@ -106,30 +84,20 @@ object Core {
         setupParamsString: String,
         callback: (result: String?) -> Unit,
     ) {
-        quickSetup(
+        Mobile.quickSetup(
             initParamsString,
             setupParamsString,
-            object : InvokeInterface {
-                override fun onResult(result: String?) {
-                    callback(result)
-                }
-            },
+            ResultHandler { result -> callback(result?.decodeToString()) },
         )
     }
 
-    private external fun quickSetup(
-        initParamsString: String,
-        setupParamsString: String,
-        cb: InvokeInterface,
-    )
+    fun stopTun() = Mobile.stopTun()
 
-    external fun stopTun()
+    fun startListener() = Mobile.startListener()
 
-    external fun getTraffic(onlyStatisticsProxy: Boolean): String
+    fun stopListener() = Mobile.stopListener()
 
-    external fun getTotalTraffic(onlyStatisticsProxy: Boolean): String
+    fun getTraffic(onlyStatisticsProxy: Boolean): String = Mobile.getTraffic(onlyStatisticsProxy)
 
-    init {
-        System.loadLibrary("core")
-    }
+    fun getTotalTraffic(onlyStatisticsProxy: Boolean): String = Mobile.getTotalTraffic(onlyStatisticsProxy)
 }

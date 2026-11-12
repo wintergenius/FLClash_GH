@@ -1,31 +1,74 @@
 part of '../state.dart';
 
 @riverpod
-UpdateParams updateParams(Ref ref) {
-  final routeMode = ref.watch(
-    networkSettingProvider.select((state) => state.routeMode),
-  );
+List<String> effectiveProxyCredentials(Ref ref) {
   final authentication = ref.watch(
     networkSettingProvider.select((state) => state.authentication),
   );
+  final allowLan = ref.watch(
+    patchClashConfigProvider.select((state) => state.allowLan),
+  );
+  final androidSessionSecret = ref.watch(androidSessionProxySecretProvider);
+  return resolveLocalProxyCredentials(
+    authentication: authentication,
+    allowLan: allowLan,
+    androidSessionSecret: androidSessionSecret,
+  );
+}
+
+@riverpod
+UpdateParams updateParams(Ref ref) {
+  final credentials = ref.watch(effectiveProxyCredentialsProvider);
+  final options = ref.watch(coreOptionsProvider);
   return ref.watch(
     patchClashConfigProvider.select(
-      (state) => UpdateParams(
-        tun: state.tun.getRealTun(routeMode),
-        authentication: authentication.credentials,
-        allowLan: state.allowLan,
-        findProcessMode: state.findProcessMode,
-        mode: state.mode,
-        logLevel: state.logLevel,
-        ipv6: state.ipv6,
-        tcpConcurrent: state.tcpConcurrent,
-        externalController: state.externalController,
-        unifiedDelay: state.unifiedDelay,
-        mixedPort: state.mixedPort,
-        geoAutoUpdate: state.geoAutoUpdate,
-        geoUpdateInterval: state.geoUpdateInterval,
+      (state) => state.toUpdateParams(
+        authentication: credentials,
+        options: options,
       ),
     ),
+  );
+}
+
+@riverpod
+CoreOptions coreOptions(Ref ref) {
+  final (:testUrl, :mitmCapture) = ref.watch(
+    patchClashConfigProvider.select(
+      (state) => (testUrl: state.testUrl, mitmCapture: state.mitm.capture),
+    ),
+  );
+  final (:checkCertificate, :delayTestTimeout) = ref.watch(
+    appSettingProvider.select(
+      (state) => (
+        checkCertificate: state.checkCertificate,
+        delayTestTimeout: state.delayTestTimeout,
+      ),
+    ),
+  );
+  return CoreOptions(
+    testUrl: testUrl,
+    skipCertVerify: !checkCertificate,
+    delayTestTimeout: delayTestTimeout,
+    mitmCapture: mitmFeature && mitmCapture,
+  );
+}
+
+@riverpod
+({PatchClashConfig patchConfig, bool appendSystemDns, bool bypassPrivateRoute})
+setupPatch(Ref ref) {
+  return (
+    patchConfig: ref.watch(
+      patchClashConfigProvider.select((state) => state.setupOnly),
+    ),
+    appendSystemDns: ref.watch(
+      networkSettingProvider.select((state) => state.appendSystemDns),
+    ),
+    // Android's VPN service takes it on its next start instead.
+    bypassPrivateRoute:
+        system.isDesktop &&
+        ref.watch(
+          networkSettingProvider.select((state) => state.bypassPrivateRoute),
+        ),
   );
 }
 
@@ -46,12 +89,18 @@ TrayState trayState(Ref ref) {
   );
   final appSetting = ref.watch(
     appSettingProvider.select(
-      (state) =>
-          (autoLaunch: state.autoLaunch, showTrayTitle: state.showTrayTitle),
+      (state) => (
+        autoLaunch: state.autoLaunch,
+        showTrayTitle: state.showTrayTitle,
+        monochromeTrayIcon: state.monochromeTrayIcon,
+      ),
     ),
   );
   final groups = ref.watch(currentGroupsStateProvider).value;
   final selectedMap = ref.watch(selectedMapProvider);
+  final safeMode = ref.watch(safeModeProvider);
+  final suspended = ref.watch(suspendProvider);
+  final hotKeys = _trayHotKeys(ref);
 
   return TrayState(
     mode: clashConfig.mode,
@@ -60,10 +109,61 @@ TrayState trayState(Ref ref) {
     systemProxy: systemProxy,
     tunEnable: clashConfig.tunEnable,
     isStart: isStart,
+    suspended: isStart && suspended,
     groups: groups,
     selectedMap: selectedMap,
     showTrayTitle: appSetting.showTrayTitle,
+    monochromeTrayIcon: appSetting.monochromeTrayIcon,
+    safeMode: safeMode,
+    hotKeys: hotKeys,
   );
+}
+
+Map<HotAction, HotKeyAction> _trayHotKeys(Ref ref) {
+  final failures = ref.watch(hotKeyFailuresProvider);
+  return {
+    for (final hotKeyAction in ref.watch(hotKeyActionsProvider))
+      if (isValidHotKey(hotKeyAction.modifiers, hotKeyAction.key) &&
+          !failures.containsKey(hotKeyAction.action))
+        hotKeyAction.action: hotKeyAction,
+  };
+}
+
+/// Measured delays of the proxies the tray lists, by group and then proxy
+/// name. Resolved like a proxy card, so a nested group shows its selection.
+@riverpod
+Map<String, Map<String, int>> trayDelays(Ref ref) {
+  final delayMap = ref.watch(delayDataSourceProvider);
+  if (delayMap.isEmpty) {
+    return const {};
+  }
+  final groups = ref.watch(currentGroupsStateProvider).value;
+  final allGroups = ref.watch(groupsProvider);
+  final selectedMap = ref.watch(selectedMapProvider);
+  final defaultTestUrl = ref.watch(
+    patchClashConfigProvider.select((state) => state.testUrl),
+  );
+  final delays = <String, Map<String, int>>{};
+  for (final group in groups) {
+    final testUrl = group.testUrl.takeFirstValid([defaultTestUrl]);
+    final groupDelays = <String, int>{};
+    for (final proxy in group.all) {
+      final delay = computeProxyDelayState(
+        proxyName: proxy.name,
+        testUrl: testUrl,
+        groups: allGroups,
+        selectedMap: selectedMap,
+        delayMap: delayMap,
+      ).delay;
+      if (delay != 0) {
+        groupDelays[proxy.name] = delay;
+      }
+    }
+    if (groupDelays.isNotEmpty) {
+      delays[group.name] = groupDelays;
+    }
+  }
+  return delays;
 }
 
 @riverpod
@@ -78,27 +178,6 @@ TrayTitleState trayTitleState(Ref ref) {
 }
 
 @riverpod
-VpnState vpnState(Ref ref) {
-  final vpnProps = ref.watch(vpnSettingProvider);
-  final stack = ref.watch(
-    patchClashConfigProvider.select((state) => state.tun.stack),
-  );
-  return VpnState(stack: stack, vpnProps: vpnProps);
-}
-
-@riverpod
-PackageListSelectorState packageListSelectorState(Ref ref) {
-  final packages = ref.watch(packagesProvider);
-  final accessControlProps = ref.watch(
-    vpnSettingProvider.select((state) => state.accessControlProps),
-  );
-  return PackageListSelectorState(
-    packages: packages,
-    accessControlProps: accessControlProps,
-  );
-}
-
-@riverpod
 HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) {
   return ref.watch(
     hotKeyActionsProvider.select((state) {
@@ -109,28 +188,11 @@ HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) {
 }
 
 @riverpod
-({bool isInit, int checkIpNum, bool containsDetection}) checkIp(Ref ref) {
-  final isInit = ref.watch(initProvider);
-  final checkIpNum = ref.watch(checkIpNumProvider);
-  final containsDetection = ref.watch(
-    dashboardStateProvider.select(
-      (state) =>
-          state.dashboardWidgets.contains(DashboardWidget.networkDetection),
-    ),
-  );
-  return (
-    isInit: isInit,
-    checkIpNum: checkIpNum,
-    containsDetection: containsDetection,
-  );
-}
-
-@riverpod
 bool shouldPatchSystemDns(Ref ref) {
   final autoSetSystemDns = ref.watch(
     networkSettingProvider.select((state) => state.autoSetSystemDns),
   );
-  if (!autoSetSystemDns) {
+  if (!autoSetSystemDns || ref.watch(safeModeProvider)) {
     return false;
   }
   final isStart = ref.watch(runTimeProvider.select((state) => state != null));
@@ -159,69 +221,89 @@ SharedState sharedState(Ref ref) {
       (state) => (
         onlyStatisticsProxy: state.onlyStatisticsProxy,
         showStopAction: state.showNotificationStopAction,
-        crashlytics: state.crashlytics,
-        testUrl: state.testUrl,
+        checkCertificate: state.checkCertificate,
       ),
     ),
   );
-  final networkSetting = ref.watch(
-    networkSettingProvider.select(
-      (state) => (
-        bypassDomain: state.bypassDomain,
-        routeMode: state.routeMode,
-        authenticated: state.authentication.credentials.isNotEmpty,
-      ),
-    ),
-  );
-  final clashConfig = ref.watch(
-    patchClashConfigProvider.select(
-      (state) => (
-        stack: state.tun.stack.name,
-        mixedPort: state.mixedPort,
-        routeAddress: state.tun.resolveRouteAddress(networkSetting.routeMode),
-      ),
-    ),
-  );
-  final vpnSetting = ref.watch(vpnSettingProvider);
   final currentProfileName = currentProfile.label;
   final selectedMap = currentProfile.selectedMap;
   final onlyStatisticsProxy = appSetting.onlyStatisticsProxy;
-  final crashlytics = appSetting.crashlytics;
-  final testUrl = appSetting.testUrl;
-  final stack = clashConfig.stack;
-  final port = clashConfig.mixedPort;
   return SharedState(
     currentProfileName: currentProfileName,
     onlyStatisticsProxy: onlyStatisticsProxy,
     showStopAction: appSetting.showStopAction,
     stopText: currentAppLocalizations.stop,
-    crashlytics: crashlytics,
     stopTip: currentAppLocalizations.stopVpn,
     startTip: currentAppLocalizations.startVpn,
-    setupParams: SetupParams(selectedMap: selectedMap, testUrl: testUrl),
-    vpnOptions: VpnOptions(
-      enable: vpnSetting.enable,
-      stack: stack,
-      // VpnService.setHttpProxy cannot carry credentials, so an authenticated
-      // mixed port must not be declared as the system HTTP proxy; traffic
-      // still flows through TUN.
-      systemProxy: vpnSetting.systemProxy && !networkSetting.authenticated,
-      port: port,
-      ipv6: vpnSetting.ipv6,
-      dnsHijacking: vpnSetting.dnsHijacking,
-      accessControlProps: vpnSetting.accessControlProps,
-      allowBypass: vpnSetting.allowBypass,
-      bypassDomain: networkSetting.bypassDomain,
-      routeAddress: clashConfig.routeAddress,
+    localNetworkTip: currentAppLocalizations.localNetworkDeniedTip,
+    setupParams: SetupParams(
+      selectedMap: selectedMap,
+      options: ref.watch(coreOptionsProvider),
     ),
+    vpnOptions: ref.watch(vpnOptionsProvider).value,
+  );
+}
+
+@Riverpod(keepAlive: true)
+Future<List<String>> vpnRouteAddress(Ref ref) {
+  final routes = ref.watch(
+    patchClashConfigProvider.select(
+      (state) => Tun(
+        routeAddress: state.tun.routeAddress,
+        routeExcludeAddress: state.tun.routeExcludeAddress,
+      ),
+    ),
+  );
+  final bypassPrivateRoute = ref.watch(
+    networkSettingProvider.select((state) => state.bypassPrivateRoute),
+  );
+  return routes.vpnRouteAddress(bypassPrivateRoute: bypassPrivateRoute);
+}
+
+@Riverpod(keepAlive: true)
+Future<VpnOptions> vpnOptions(Ref ref) async {
+  final bypassDomain = ref.watch(
+    networkSettingProvider.select((state) => state.bypassDomain),
+  );
+  final authenticated = ref.watch(
+    effectiveProxyCredentialsProvider.select(
+      (credentials) => credentials.isNotEmpty,
+    ),
+  );
+  final clashConfig = ref.watch(
+    patchClashConfigProvider.select(
+      (state) => (tun: state.tun, mixedPort: state.mixedPort),
+    ),
+  );
+  final vpnSetting = ref.watch(vpnSettingProvider);
+  final safeMode = ref.watch(safeModeProvider);
+  final routeAddress = ref.watch(vpnRouteAddressProvider.future);
+  final tun = clashConfig.tun;
+  return VpnOptions(
+    enable: vpnSetting.enable && !safeMode,
+    stack: tun.stack.name,
+    // VpnService.setHttpProxy cannot carry credentials, so an authenticated
+    // mixed port is left to TUN instead of declared as the system proxy.
+    systemProxy: vpnSetting.systemProxy && !authenticated && !safeMode,
+    port: clashConfig.mixedPort,
+    ipv6: vpnSetting.ipv6,
+    dnsHijacking: vpnSetting.dnsHijacking,
+    accessControlProps: vpnSetting.accessControlProps,
+    allowBypass: vpnSetting.allowBypass,
+    bypassDomain: bypassDomain,
+    routeAddress: await routeAddress,
+    mtu: tun.mtu,
+    congestionController: tun.congestionController,
   );
 }
 
 @riverpod
 class AccessControlState extends _$AccessControlState
     with AutoDisposeNotifierMixin {
+  /// A draft of the saved props, which the access page edits until it saves.
   @override
-  AccessControlProps build() => const AccessControlProps();
+  AccessControlProps build() =>
+      ref.read(vpnSettingProvider.select((state) => state.accessControlProps));
 }
 
 @riverpod

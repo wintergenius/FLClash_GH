@@ -83,10 +83,13 @@ static GtkWidget* build_menu(FlValue* items) {
       continue;
     }
 
-    const char* label = string_value(entry, "label");
-    if (label == nullptr) {
-      label = "";
-    }
+    const char* raw_label = string_value(entry, "label");
+    const char* detail = string_value(entry, "detail");
+    g_autofree gchar* label =
+        detail != nullptr && detail[0] != '\0'
+            ? g_strdup_printf("%s  (%s)", raw_label == nullptr ? "" : raw_label,
+                              detail)
+            : g_strdup(raw_label == nullptr ? "" : raw_label);
 
     GtkWidget* item;
     bool dispatches = true;
@@ -171,8 +174,12 @@ static FlMethodResponse* handle_show(TrayPlugin* self, FlValue* args) {
 
   const bool is_new = self->indicator == nullptr;
   if (is_new) {
+    // libayatana-appindicator 0.5.94 deprecates both constructors for its -glib
+    // successor, which has no GtkMenu API and no Ubuntu 22.04 package.
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     self->indicator =
         app_indicator_new(id, icon_path, APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    G_GNUC_END_IGNORE_DEPRECATIONS
   }
 
   attach_menu(self, fl_value_lookup_string(args, "menu"));

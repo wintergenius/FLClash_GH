@@ -1,11 +1,13 @@
-import 'package:fl_clash/widgets/keyed_animated_list.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:prism_ui/prism_ui.dart';
+import '../helpers/host_scaffold.dart';
+import '../helpers/test_app.dart';
 
 void main() {
   Widget buildList(List<String> items) {
-    return MaterialApp(
-      home: Scaffold(
+    return HostApp(
+      home: HostScaffold(
         body: KeyedAnimatedList<String>(
           items: items,
           keyOf: (item) => item,
@@ -83,4 +85,84 @@ void main() {
     expect(find.text('b'), findsOneWidget);
     expect(topOf(tester, 'b'), 40);
   });
+
+  testWidgets('rows entering in one update share a single ticker', (
+    tester,
+  ) async {
+    final visible = [for (var i = 0; i < 30; i++) '$i'];
+    await tester.pumpWidget(buildList(visible));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      buildList([...visible, for (var i = 30; i < 70; i++) '$i']),
+    );
+    await tester.pump();
+
+    expect(tester.binding.transientCallbackCount, 1);
+    await tester.pumpAndSettle();
+    expect(tester.binding.transientCallbackCount, 0);
+  });
+
+  testWidgets('a change too large to animate swaps the rows at once', (
+    tester,
+  ) async {
+    final many = [for (var i = 0; i < 100; i++) '$i'];
+    await tester.pumpWidget(buildList(many));
+    await tester.pumpWidget(buildList(const ['0', '1']));
+    await tester.pump();
+
+    expect(
+      find.descendant(
+        of: find.byType(KeyedAnimatedList<String>),
+        matching: find.byType(SizeTransition),
+      ),
+      findsNothing,
+    );
+    expect(find.text('2'), findsNothing);
+    expect(topOf(tester, '1'), 40);
+
+    await tester.pumpWidget(buildList(many));
+    await tester.pump();
+    expect(find.text('10'), findsOneWidget);
+    expect(topOf(tester, '10'), 400);
+  });
+
+  testWidgets('a row keeps its state as it settles', (tester) async {
+    var mounts = 0;
+    Widget build(List<String> items) => HostApp(
+      home: HostScaffold(
+        body: KeyedAnimatedList<String>(
+          items: items,
+          keyOf: (item) => item,
+          itemBuilder: (_, item) => _CountsMounts(onMount: () => mounts++),
+        ),
+      ),
+    );
+    await tester.pumpWidget(build(const ['a']));
+    await tester.pumpWidget(build(const ['b', 'a']));
+    await tester.pump();
+    expect(mounts, 2);
+
+    await tester.pumpAndSettle();
+    expect(mounts, 2);
+  });
+}
+
+class _CountsMounts extends StatefulWidget {
+  const _CountsMounts({required this.onMount});
+
+  final VoidCallback onMount;
+
+  @override
+  State<_CountsMounts> createState() => _CountsMountsState();
+}
+
+class _CountsMountsState extends State<_CountsMounts> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onMount();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox(height: 40);
 }
